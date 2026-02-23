@@ -26,6 +26,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@hono/node-server": "^1.19.9",
     "@octokit/app": "^15.1.0",
     "@octokit/rest": "^21.0.0",
     "@octokit/webhooks": "^13.4.0",
