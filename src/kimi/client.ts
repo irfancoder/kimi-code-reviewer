@@ -36,7 +36,7 @@ export class KimiClient {
 
   constructor(config: KimiClientConfig) {
     this.apiKey = config.apiKey;
-    this.model = config.model ?? 'kimi-k2-0905';
+    this.model = config.model ?? 'kimi-k2.5';
     this.baseUrl = config.baseUrl ?? 'https://api.moonshot.cn/v1';
     this.maxTokens = config.maxTokens ?? 16384;
     this.temperature = config.temperature ?? 0.1;

@@ -10,7 +10,7 @@ async function run(): Promise<void> {
     // Get inputs
     const kimiApiKey = core.getInput('kimi_api_key', { required: true });
     const githubToken = core.getInput('github_token');
-    const model = core.getInput('model') || 'kimi-k2-0905';
+    const model = core.getInput('model') || 'kimi-k2.5';
     const failOn = (core.getInput('fail_on') || 'critical') as 'critical' | 'warning' | 'never';
 
     const octokit = github.getOctokit(githubToken);
