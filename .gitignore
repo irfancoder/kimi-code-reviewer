@@ -1,6 +1,6 @@
 node_modules/
 dist/
-action/dist/
+!action/dist/
 .env
 .env.local
 *.log

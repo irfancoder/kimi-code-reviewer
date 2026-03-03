@@ -1,4 +1,5 @@
 import type { Octokit } from '@octokit/rest';
+import YAML from 'yaml';
 import { reviewConfigSchema, type ReviewConfig } from './schema.js';
 import { DEFAULT_CONFIG } from './defaults.js';
 import { ConfigError } from '../utils/errors.js';
@@ -42,21 +43,8 @@ export async function loadConfig(
   }
 }
 
-/**
- * Simple YAML parser for the subset we use.
- * For production, consider using `yaml` package.
- * This handles basic key-value pairs and nested objects.
- */
 function parseYaml(content: string): Record<string, unknown> {
-  // Use a dynamic import approach — for now, just do basic JSON-like parsing
-  // In production, add `yaml` as a dependency
-  try {
-    // Try JSON first (some users might use JSON format)
-    return JSON.parse(content);
-  } catch {
-    // Basic YAML-like parsing for simple configs
-    // TODO: Replace with proper yaml parser
-    logger.warn('Basic YAML parsing used — consider adding yaml dependency for full support');
-    return {};
-  }
+  const parsed = YAML.parse(content);
+  if (parsed == null || typeof parsed !== 'object') return {};
+  return parsed as Record<string, unknown>;
 }
