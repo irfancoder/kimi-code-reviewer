@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../types/review.js';
+import type { ChatMessage } from "../types/review.js";
 export interface KimiClientConfig {
     apiKey: string;
     model?: string;
@@ -35,7 +35,7 @@ export declare class KimiClient {
     chatCompletion(params: {
         messages: ChatMessage[];
         responseFormat?: {
-            type: 'json_object' | 'text';
+            type: "json_object" | "text";
         };
     }): Promise<ChatCompletionResponse>;
 }

@@ -2,6 +2,7 @@ import { z } from 'zod';
 export declare const reviewConfigSchema: z.ZodObject<{
     language: z.ZodDefault<z.ZodEnum<["en", "zh-TW", "zh-CN", "ja", "ko"]>>;
     model: z.ZodDefault<z.ZodString>;
+    baseUrl: z.ZodOptional<z.ZodString>;
     review: z.ZodDefault<z.ZodObject<{
         auto: z.ZodDefault<z.ZodObject<{
             enabled: z.ZodDefault<z.ZodBoolean>;
@@ -183,9 +184,11 @@ export declare const reviewConfigSchema: z.ZodObject<{
         enabled: boolean;
         ttl: number;
     };
+    baseUrl?: string | undefined;
 }, {
     model?: string | undefined;
     language?: "en" | "zh-TW" | "zh-CN" | "ja" | "ko" | undefined;
+    baseUrl?: string | undefined;
     review?: {
         auto?: {
             enabled?: boolean | undefined;
