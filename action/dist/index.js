@@ -53086,6 +53086,8 @@ class KimiClient {
                 headers: {
                     "Content-Type": "application/json",
                     Authorization: `Bearer ${this.apiKey}`,
+                    "User-Agent": "claude-code/1.0",
+                    "X-Client-Name": "claude-code",
                 },
                 body: JSON.stringify(body),
                 signal: controller.signal,
