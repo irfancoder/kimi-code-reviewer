@@ -53051,6 +53051,7 @@ class ReviewOrchestrator {
 ;// CONCATENATED MODULE: ./src/providers/openai-compatible.ts
 
 
+
 /**
  * Generic provider for OpenAI-compatible chat completion APIs.
  * Works with Kimi, OpenAI, Groq, and self-hosted compatible endpoints.
@@ -53071,51 +53072,100 @@ class OpenAICompatibleProvider {
         this.timeout = config.timeout ?? 300_000;
     }
     async chatCompletion(params) {
-        const body = {
-            model: this.model,
-            messages: params.messages,
-            max_tokens: this.maxTokens,
-            temperature: this.temperature,
-            ...(params.responseFormat && { response_format: params.responseFormat }),
-        };
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeout);
         try {
-            const res = await fetch(`${this.baseUrl}/chat/completions`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${this.apiKey}`,
-                    'User-Agent': 'kimi-code-reviewer/1.0',
-                    'X-Client-Name': 'kimi-code-reviewer',
-                },
-                body: JSON.stringify(body),
-                signal: controller.signal,
-            });
-            if (!res.ok) {
-                const errorBody = await res.text().catch(() => '');
-                throw new KimiApiError(`LLM API error: ${res.status} ${res.statusText}`, res.status, errorBody);
+            try {
+                return await this.performCompletionRequest(params.messages, params.responseFormat, this.maxTokens, controller.signal);
             }
-            const data = (await res.json());
-            const content = data.choices?.[0]?.message?.content ?? '';
-            const usage = {
-                input: data.usage?.prompt_tokens ?? 0,
-                output: data.usage?.completion_tokens ?? 0,
-                cached: data.usage?.cached_tokens ?? 0,
-            };
-            logger.info({
-                model: this.model,
-                baseUrl: this.baseUrl,
-                promptTokens: usage.input,
-                completionTokens: usage.output,
-                cachedTokens: usage.cached,
-            }, 'LLM API call completed');
-            return { content, usage };
+            catch (err) {
+                if (!(err instanceof KimiApiError) || err.statusCode !== 400) {
+                    throw err;
+                }
+                const maxTotalTokens = extractMaxTotalTokens(String(err.responseBody ?? ''));
+                if (!maxTotalTokens) {
+                    throw err;
+                }
+                const retryMaxTokens = calculateSafeCompletionBudget(params.messages, maxTotalTokens, this.maxTokens);
+                if (retryMaxTokens <= 0 || retryMaxTokens >= this.maxTokens) {
+                    throw err;
+                }
+                logger.warn({
+                    model: this.model,
+                    baseUrl: this.baseUrl,
+                    originalMaxTokens: this.maxTokens,
+                    retryMaxTokens,
+                    maxTotalTokens,
+                }, 'Retrying LLM call with reduced max_tokens due to model token limit');
+                return await this.performCompletionRequest(params.messages, params.responseFormat, retryMaxTokens, controller.signal);
+            }
         }
         finally {
             clearTimeout(timer);
         }
     }
+    async performCompletionRequest(messages, responseFormat, maxTokens, signal) {
+        const body = {
+            model: this.model,
+            messages,
+            max_tokens: maxTokens,
+            temperature: this.temperature,
+            ...(responseFormat && { response_format: responseFormat }),
+        };
+        const res = await fetch(`${this.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.apiKey}`,
+                'User-Agent': 'kimi-code-reviewer/1.0',
+                'X-Client-Name': 'kimi-code-reviewer',
+            },
+            body: JSON.stringify(body),
+            signal,
+        });
+        if (!res.ok) {
+            const errorBody = await res.text().catch(() => '');
+            throw new KimiApiError(`LLM API error: ${res.status} ${res.statusText}`, res.status, errorBody);
+        }
+        const data = (await res.json());
+        const content = data.choices?.[0]?.message?.content ?? '';
+        const usage = {
+            input: data.usage?.prompt_tokens ?? 0,
+            output: data.usage?.completion_tokens ?? 0,
+            cached: data.usage?.cached_tokens ?? 0,
+        };
+        logger.info({
+            model: this.model,
+            baseUrl: this.baseUrl,
+            promptTokens: usage.input,
+            completionTokens: usage.output,
+            cachedTokens: usage.cached,
+        }, 'LLM API call completed');
+        return { content, usage };
+    }
+}
+function extractMaxTotalTokens(errorBody) {
+    const patterns = [
+        /max_model_len(?:=max_total_tokens)?=(\d+)/i,
+        /max[_\s-]?total[_\s-]?tokens[^\d]*(\d+)/i,
+    ];
+    for (const pattern of patterns) {
+        const match = errorBody.match(pattern);
+        if (match) {
+            const parsed = Number.parseInt(match[1], 10);
+            if (Number.isFinite(parsed) && parsed > 0)
+                return parsed;
+        }
+    }
+    return null;
+}
+function calculateSafeCompletionBudget(messages, maxTotalTokens, configuredMaxTokens) {
+    const promptEstimate = messages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0) +
+        messages.length * 8;
+    const safetyReserve = 64;
+    const available = maxTotalTokens - promptEstimate - safetyReserve;
+    const capped = Math.min(configuredMaxTokens, available);
+    return Math.max(0, capped);
 }
 
 ;// CONCATENATED MODULE: ./src/providers/factory.ts
