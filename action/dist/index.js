@@ -52937,11 +52937,11 @@ class ReviewError extends Error {
 
 class ReviewOrchestrator {
     octokit;
-    kimi;
+    llm;
     config;
-    constructor(octokit, kimi, config) {
+    constructor(octokit, llm, config) {
         this.octokit = octokit;
-        this.kimi = kimi;
+        this.llm = llm;
         this.config = config;
     }
     async reviewPullRequest(params) {
@@ -52983,18 +52983,14 @@ class ReviewOrchestrator {
             // Step 5: Build messages (cache-optimized order)
             const systemPrompt = buildReviewMessages(prContext, this.config)[0].content;
             const messages = buildCacheOptimizedMessages(systemPrompt, prContext, this.config, prContext.fileContents);
-            // Step 6: Call Kimi API
-            logger.info({ messageCount: messages.length }, 'Calling Kimi API');
-            const response = await this.kimi.chatCompletion({
+            // Step 6: Call LLM API
+            logger.info({ messageCount: messages.length }, 'Calling LLM API');
+            const response = await this.llm.chatCompletion({
                 messages,
                 responseFormat: { type: 'json_object' },
             });
             // Step 7: Parse response
-            const result = parseKimiResponse(response.choices[0].message.content, {
-                input: response.usage.prompt_tokens,
-                output: response.usage.completion_tokens,
-                cached: response.usage.cached_tokens ?? 0,
-            });
+            const result = parseKimiResponse(response.content, response.usage);
             // Step 8: Filter by severity
             const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
             const minIdx = minSeverityOrder.indexOf(this.config.review.minSeverity);
@@ -53052,20 +53048,24 @@ class ReviewOrchestrator {
     }
 }
 
-;// CONCATENATED MODULE: ./src/kimi/client.ts
+;// CONCATENATED MODULE: ./src/providers/openai-compatible.ts
 
 
-class KimiClient {
-    baseUrl;
+/**
+ * Generic provider for OpenAI-compatible chat completion APIs.
+ * Works with Kimi, OpenAI, Groq, and self-hosted compatible endpoints.
+ */
+class OpenAICompatibleProvider {
     apiKey;
     model;
+    baseUrl;
     maxTokens;
     temperature;
     timeout;
     constructor(config) {
         this.apiKey = config.apiKey;
-        this.model = config.model ?? "kimi-k2.5";
-        this.baseUrl = config.baseUrl ?? "https://api.kimi.com/coding/v1";
+        this.model = config.model;
+        this.baseUrl = config.baseUrl ?? 'https://api.kimi.com/coding/v1';
         this.maxTokens = config.maxTokens ?? 16384;
         this.temperature = config.temperature ?? 1;
         this.timeout = config.timeout ?? 300_000;
@@ -53082,32 +53082,65 @@ class KimiClient {
         const timer = setTimeout(() => controller.abort(), this.timeout);
         try {
             const res = await fetch(`${this.baseUrl}/chat/completions`, {
-                method: "POST",
+                method: 'POST',
                 headers: {
-                    "Content-Type": "application/json",
+                    'Content-Type': 'application/json',
                     Authorization: `Bearer ${this.apiKey}`,
-                    "User-Agent": "claude-code/1.0",
-                    "X-Client-Name": "claude-code",
+                    'User-Agent': 'kimi-code-reviewer/1.0',
+                    'X-Client-Name': 'kimi-code-reviewer',
                 },
                 body: JSON.stringify(body),
                 signal: controller.signal,
             });
             if (!res.ok) {
-                const errorBody = await res.text().catch(() => "");
-                throw new KimiApiError(`Kimi API error: ${res.status} ${res.statusText}`, res.status, errorBody);
+                const errorBody = await res.text().catch(() => '');
+                throw new KimiApiError(`LLM API error: ${res.status} ${res.statusText}`, res.status, errorBody);
             }
             const data = (await res.json());
+            const content = data.choices?.[0]?.message?.content ?? '';
+            const usage = {
+                input: data.usage?.prompt_tokens ?? 0,
+                output: data.usage?.completion_tokens ?? 0,
+                cached: data.usage?.cached_tokens ?? 0,
+            };
             logger.info({
                 model: this.model,
-                promptTokens: data.usage.prompt_tokens,
-                completionTokens: data.usage.completion_tokens,
-                cachedTokens: data.usage.cached_tokens ?? 0,
-            }, "Kimi API call completed");
-            return data;
+                baseUrl: this.baseUrl,
+                promptTokens: usage.input,
+                completionTokens: usage.output,
+                cachedTokens: usage.cached,
+            }, 'LLM API call completed');
+            return { content, usage };
         }
         finally {
             clearTimeout(timer);
         }
+    }
+}
+
+;// CONCATENATED MODULE: ./src/providers/factory.ts
+
+
+const SUPPORTED_PROVIDERS = ['kimi', 'openai-compatible'];
+function parseProvider(provider) {
+    if (provider === 'kimi' || provider === 'openai-compatible') {
+        return provider;
+    }
+    throw new ConfigError(`Invalid provider: "${provider}". Supported providers: ${SUPPORTED_PROVIDERS.join(', ')}`);
+}
+function createLLMProvider(config) {
+    const provider = parseProvider(config.provider);
+    // For now, we support Kimi + any OpenAI-compatible endpoint through one adapter.
+    // Keep this switch so adding non-compatible providers (e.g., Anthropic) is straightforward.
+    switch (provider) {
+        case 'openai-compatible':
+        case 'kimi':
+        default:
+            return new OpenAICompatibleProvider({
+                apiKey: config.apiKey,
+                model: config.model,
+                baseUrl: config.baseUrl,
+            });
     }
 }
 
@@ -53117,6 +53150,7 @@ var dist = __nccwpck_require__(6159);
 
 const reviewConfigSchema = objectType({
     language: enumType(['en', 'zh-TW', 'zh-CN', 'ja', 'ko']).default('en'),
+    provider: enumType(['kimi', 'openai-compatible']).default('kimi'),
     model: stringType().default('kimi-k2.5'),
     baseUrl: stringType().url().optional(),
     review: objectType({
@@ -53182,6 +53216,7 @@ const reviewConfigSchema = objectType({
 ;// CONCATENATED MODULE: ./src/config/defaults.ts
 const DEFAULT_CONFIG = {
     language: 'en',
+    provider: 'kimi',
     model: 'kimi-k2.5',
     review: {
         auto: {
@@ -53279,10 +53314,14 @@ function parseYaml(content) {
 async function run() {
     try {
         // Get inputs
-        const kimiApiKey = core.getInput("kimi_api_key", { required: true });
+        const apiKey = core.getInput("api_key") || core.getInput("kimi_api_key");
+        if (!apiKey) {
+            throw new Error("Missing required input: api_key (or legacy kimi_api_key)");
+        }
         const githubToken = core.getInput("github_token");
+        const providerInput = core.getInput("provider");
         const model = core.getInput("model") || "kimi-k2.5";
-        const baseUrl = core.getInput("kimi_base_url") || undefined;
+        const baseUrl = core.getInput("base_url") || core.getInput("kimi_base_url") || undefined;
         const failOn = (core.getInput("fail_on") || "critical");
         const octokit = github.getOctokit(githubToken);
         const context = github.context;
@@ -53303,14 +53342,18 @@ async function run() {
         const config = await loadConfig(restOctokit, owner, repo);
         // Override failOn from action input
         config.review.failOn = failOn;
-        // Create Kimi client
-        const kimi = new KimiClient({
-            apiKey: kimiApiKey,
-            model,
-            baseUrl,
+        // Override model/baseUrl from action input
+        config.model = model;
+        config.baseUrl = baseUrl;
+        // Create model provider
+        const llm = createLLMProvider({
+            apiKey,
+            provider: providerInput || config.provider,
+            model: config.model,
+            baseUrl: config.baseUrl,
         });
         // Run review
-        const orchestrator = new ReviewOrchestrator(restOctokit, kimi, config);
+        const orchestrator = new ReviewOrchestrator(restOctokit, llm, config);
         const result = await orchestrator.reviewPullRequest({
             owner,
             repo,
