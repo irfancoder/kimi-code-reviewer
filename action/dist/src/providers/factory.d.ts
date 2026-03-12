@@ -4,6 +4,7 @@ export declare function createLLMProvider(config: {
     apiKey: string;
     model: string;
     baseUrl?: string;
+    maxTokens?: number;
     provider: string;
 }): LLMProvider;
 //# sourceMappingURL=factory.d.ts.map
