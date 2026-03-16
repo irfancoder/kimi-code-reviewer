@@ -77,7 +77,7 @@ function buildReviewBody(result: ReviewResult): string {
   const cost = calculateCost(result.tokensUsed);
   const lines: string[] = [];
 
-  lines.push('## 🤖 Kimi Code Review\n');
+  lines.push('## 🤖 FiscalCR Code Review\n');
   lines.push(result.summary);
   lines.push('');
   lines.push(`**Score:** ${result.score}/100`);

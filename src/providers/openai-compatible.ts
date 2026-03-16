@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types/review.js';
-import { KimiApiError } from '../utils/errors.js';
+import { LLMApiError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import { estimateTokens } from '../utils/tokens.js';
 import type { LLMCompletionResponse, LLMProvider } from './interface.js';
@@ -8,7 +8,6 @@ export interface OpenAICompatibleProviderConfig {
   apiKey: string;
   model: string;
   baseUrl?: string;
-  maxTokens?: number;
   temperature?: number;
   timeout?: number;
 }
@@ -26,13 +25,12 @@ interface OpenAICompatibleResponse {
 
 /**
  * Generic provider for OpenAI-compatible chat completion APIs.
- * Works with Kimi, OpenAI, Groq, and self-hosted compatible endpoints.
+ * Works with any OpenAI-compatible endpoint (FiscalCR, OpenAI, Groq, self-hosted, etc.).
  */
 export class OpenAICompatibleProvider implements LLMProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
-  private readonly maxTokens: number;
   private readonly temperature: number;
   private readonly timeout: number;
 
@@ -40,7 +38,6 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.apiKey = config.apiKey;
     this.model = config.model;
     this.baseUrl = config.baseUrl ?? 'https://api.kimi.com/coding/v1';
-    this.maxTokens = config.maxTokens ?? 16384;
     this.temperature = config.temperature ?? 1;
     this.timeout = config.timeout ?? 300_000;
   }
@@ -53,51 +50,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const timer = setTimeout(() => controller.abort(), this.timeout);
 
     try {
-      try {
-        return await this.performCompletionRequest(
-          params.messages,
-          params.responseFormat,
-          this.maxTokens,
-          controller.signal,
-        );
-      } catch (err) {
-        if (!(err instanceof KimiApiError) || err.statusCode !== 400) {
-          throw err;
-        }
-
-        const maxTotalTokens = extractMaxTotalTokens(String(err.responseBody ?? ''));
-        if (!maxTotalTokens) {
-          throw err;
-        }
-
-        const retryMaxTokens = calculateSafeCompletionBudget(
-          params.messages,
-          maxTotalTokens,
-          this.maxTokens,
-        );
-
-        if (retryMaxTokens <= 0 || retryMaxTokens >= this.maxTokens) {
-          throw err;
-        }
-
-        logger.warn(
-          {
-            model: this.model,
-            baseUrl: this.baseUrl,
-            originalMaxTokens: this.maxTokens,
-            retryMaxTokens,
-            maxTotalTokens,
-          },
-          'Retrying LLM call with reduced max_tokens due to model token limit',
-        );
-
-        return await this.performCompletionRequest(
-          params.messages,
-          params.responseFormat,
-          retryMaxTokens,
-          controller.signal,
-        );
-      }
+      return await this.performCompletionRequest(
+        params.messages,
+        params.responseFormat,
+        controller.signal,
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -106,13 +63,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private async performCompletionRequest(
     messages: ChatMessage[],
     responseFormat: { type: 'json_object' | 'text' } | undefined,
-    maxTokens: number,
     signal: AbortSignal,
   ): Promise<LLMCompletionResponse> {
     const body = {
       model: this.model,
       messages,
-      max_tokens: maxTokens,
       temperature: this.temperature,
       ...(responseFormat && { response_format: responseFormat }),
     };
@@ -122,8 +77,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
-        'User-Agent': 'kimi-code-reviewer/1.0',
-        'X-Client-Name': 'kimi-code-reviewer',
+        'User-Agent': 'fiscalcr/1.0',
+        'X-Client-Name': 'fiscalcr',
       },
       body: JSON.stringify(body),
       signal,
@@ -131,7 +86,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
     if (!res.ok) {
       const errorBody = await res.text().catch(() => '');
-      throw new KimiApiError(
+      throw new LLMApiError(
         `LLM API error: ${res.status} ${res.statusText}`,
         res.status,
         errorBody,
@@ -160,34 +115,4 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
     return { content, usage };
   }
-}
-
-function extractMaxTotalTokens(errorBody: string): number | null {
-  const patterns = [
-    /max_model_len(?:=max_total_tokens)?=(\d+)/i,
-    /max[_\s-]?total[_\s-]?tokens[^\d]*(\d+)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = errorBody.match(pattern);
-    if (match) {
-      const parsed = Number.parseInt(match[1], 10);
-      if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    }
-  }
-
-  return null;
-}
-
-function calculateSafeCompletionBudget(
-  messages: ChatMessage[],
-  maxTotalTokens: number,
-  configuredMaxTokens: number,
-): number {
-  const promptEstimate = messages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0) +
-    messages.length * 8;
-  const safetyReserve = 64;
-  const available = maxTotalTokens - promptEstimate - safetyReserve;
-  const capped = Math.min(configuredMaxTokens, available);
-  return Math.max(0, capped);
 }

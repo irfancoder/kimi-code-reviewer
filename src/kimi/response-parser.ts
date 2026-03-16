@@ -49,7 +49,7 @@ const reviewResponseSchema = z.object({
 });
 
 /**
- * Try multiple strategies to extract a JSON object from Kimi's response.
+ * Try multiple strategies to extract a JSON object from the AI response.
  */
 function extractJson(raw: string): unknown | null {
   // Strategy 1: Direct JSON parse
@@ -103,18 +103,18 @@ function extractJson(raw: string): unknown | null {
   return null;
 }
 
-export function parseKimiResponse(
+export function parseAIResponse(
   raw: string,
   tokenUsage: { input: number; output: number; cached: number },
 ): ReviewResult {
-  logger.info({ rawLength: raw.length, rawPreview: raw.slice(0, 300) }, 'Parsing Kimi response');
+  logger.info({ rawLength: raw.length, rawPreview: raw.slice(0, 300) }, 'Parsing AI response');
 
   const parsed = extractJson(raw);
 
   if (!parsed || typeof parsed !== 'object') {
-    logger.error({ rawPreview: raw.slice(0, 500) }, 'Could not extract JSON from Kimi response');
+    logger.error({ rawPreview: raw.slice(0, 500) }, 'Could not extract JSON from AI response');
     return {
-      summary: 'Failed to parse Kimi response as JSON.',
+      summary: 'Failed to parse AI response as JSON.',
       score: 50,
       annotations: [],
       stats: { critical: 0, warning: 0, suggestion: 0, nitpick: 0 },
@@ -139,7 +139,7 @@ export function parseKimiResponse(
   }
 
   // Schema validation failed — salvage what we can
-  logger.warn({ errors: result.error.issues }, 'Kimi response schema validation failed, salvaging');
+  logger.warn({ errors: result.error.issues }, 'AI response schema validation failed, salvaging');
   const partial = parsed as Record<string, unknown>;
   const summary = typeof partial.summary === 'string' ? partial.summary : 'Review completed (partial parse)';
   const score = typeof partial.score === 'number' ? Math.min(100, Math.max(0, partial.score)) : 50;

@@ -9,7 +9,6 @@ interface AppContext {
   apiKey: string;
   provider?: string;
   model?: string;
-  maxOutputTokens?: number;
   baseUrl?: string;
   getInstallationOctokit: (installationId: number) => Promise<Octokit>;
 }
@@ -47,7 +46,6 @@ export function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void {
         provider: appCtx.provider ?? config.provider,
         model: appCtx.model ?? config.model,
         baseUrl: appCtx.baseUrl ?? config.baseUrl,
-        maxTokens: appCtx.maxOutputTokens ?? config.maxOutputTokens,
       });
 
       const orchestrator = new ReviewOrchestrator(octokit, llm, config);
@@ -55,10 +53,10 @@ export function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void {
     },
   );
 
-  // @kimi mention in PR/issue comments
+  // @fiscalcr mention in PR/issue comments
   webhooks.on(['issue_comment.created'], async ({ payload }) => {
     const body = payload.comment.body;
-    if (!body.includes('@kimi')) return;
+    if (!body.includes('@fiscalcr')) return;
     if (!payload.issue.pull_request) return;
 
     const installationId = payload.installation?.id;
@@ -69,9 +67,9 @@ export function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void {
     const repo = payload.repository.name;
     const pullNumber = payload.issue.number;
 
-    logger.info({ owner, repo, pullNumber }, '@kimi mention detected');
+    logger.info({ owner, repo, pullNumber }, '@fiscalcr mention detected');
 
-    const command = parseKimiCommand(body);
+    const command = parseFiscalCRCommand(body);
 
     if (command === 'review') {
       const config = await loadConfig(octokit, owner, repo);
@@ -80,7 +78,6 @@ export function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void {
         provider: appCtx.provider ?? config.provider,
         model: appCtx.model ?? config.model,
         baseUrl: appCtx.baseUrl ?? config.baseUrl,
-        maxTokens: appCtx.maxOutputTokens ?? config.maxOutputTokens,
       });
 
       const { data: pr } = await octokit.pulls.get({
@@ -102,12 +99,12 @@ export function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void {
         repo,
         issue_number: pullNumber,
         body: [
-          '## Kimi Code Reviewer Commands\n',
+          '## FiscalCR Commands\n',
           '| Command | Description |',
           '|---------|-------------|',
           '| `@fiscalcr review` | Run a full code review on this PR |',
-          '| `@kimi help` | Show this help message |',
-          '\nPowered by Moonshot AI with 256K context window.',
+          '| `@fiscalcr help` | Show this help message |',
+          '\nPowered by FiscalCR — model-agnostic AI code review.',
         ].join('\n'),
       });
     }
@@ -134,7 +131,6 @@ export function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void {
       provider: appCtx.provider ?? config.provider,
       model: appCtx.model ?? config.model,
       baseUrl: appCtx.baseUrl ?? config.baseUrl,
-      maxTokens: appCtx.maxOutputTokens ?? config.maxOutputTokens,
     });
 
     const orchestrator = new ReviewOrchestrator(octokit, llm, config);
@@ -142,8 +138,8 @@ export function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void {
   });
 }
 
-function parseKimiCommand(body: string): 'review' | 'help' | 'unknown' {
-  const match = body.match(/@kimi\s+(\w+)/i);
+function parseFiscalCRCommand(body: string): 'review' | 'help' | 'unknown' {
+  const match = body.match(/@fiscalcr\s+(\w+)/i);
   if (!match) return 'review';
   const cmd = match[1].toLowerCase();
   if (cmd === 'review') return 'review';

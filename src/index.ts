@@ -14,23 +14,14 @@ server.get('/health', (c) => {
 
 // GitHub webhook endpoint
 server.post('/api/webhook', async (c) => {
-  const parsedMaxOutputTokens = process.env.MODEL_MAX_OUTPUT_TOKENS
-    ? Number.parseInt(process.env.MODEL_MAX_OUTPUT_TOKENS, 10)
-    : undefined;
-  const maxOutputTokens = Number.isFinite(parsedMaxOutputTokens ?? NaN) &&
-    (parsedMaxOutputTokens ?? 0) > 0
-      ? parsedMaxOutputTokens
-      : undefined;
-
   const app = createApp({
     githubAppId: process.env.GITHUB_APP_ID!,
     githubPrivateKey: process.env.GITHUB_PRIVATE_KEY!,
     githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
-    apiKey: process.env.API_KEY ?? process.env.KIMI_API_KEY!,
+    apiKey: process.env.API_KEY ?? process.env.FISCALCR_API_KEY ?? process.env.KIMI_API_KEY!,
     provider: process.env.MODEL_PROVIDER,
-    model: process.env.MODEL ?? process.env.KIMI_MODEL,
-    maxOutputTokens,
-    baseUrl: process.env.BASE_URL ?? process.env.KIMI_BASE_URL,
+    model: process.env.MODEL ?? process.env.FISCALCR_MODEL ?? process.env.KIMI_MODEL,
+    baseUrl: process.env.BASE_URL ?? process.env.FISCALCR_BASE_URL ?? process.env.KIMI_BASE_URL,
   });
 
   const id = c.req.header('x-github-delivery') ?? '';
@@ -54,7 +45,7 @@ server.post('/api/webhook', async (c) => {
 
 // Start server
 serve({ fetch: server.fetch, port: PORT }, () => {
-  logger.info({ port: PORT }, 'Kimi Code Reviewer server started');
+  logger.info({ port: PORT }, 'FiscalCR server started');
 });
 
 export { server };

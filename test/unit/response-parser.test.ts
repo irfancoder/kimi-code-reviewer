@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { parseKimiResponse } from '../../src/kimi/response-parser.js';
+import { parseAIResponse } from '../../src/kimi/response-parser.js';
 
 const usage = { input: 1000, output: 500, cached: 0 };
 
-describe('parseKimiResponse', () => {
+describe('parseAIResponse', () => {
   it('parses valid JSON directly', () => {
     const raw = JSON.stringify({
       summary: 'Looks good',

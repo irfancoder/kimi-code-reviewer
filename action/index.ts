@@ -5,17 +5,6 @@ import { createLLMProvider } from "../src/providers/factory.js";
 import { loadConfig } from "../src/config/loader.js";
 import { calculateCost } from "../src/utils/tokens.js";
 
-function parseMaxOutputTokens(raw: string): number {
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error("Invalid max_output_tokens: must be a positive integer");
-  }
-  if (value < 64 || value > 32768) {
-    throw new Error("Invalid max_output_tokens: must be between 64 and 32768");
-  }
-  return value;
-}
-
 async function run(): Promise<void> {
   try {
     // Get inputs
@@ -27,7 +16,6 @@ async function run(): Promise<void> {
     const githubToken = core.getInput("github_token");
     const providerInput = core.getInput("provider");
     const model = core.getInput("model") || "kimi-k2.5";
-    const maxOutputTokensInput = core.getInput("max_output_tokens");
     const baseUrl = core.getInput("base_url") || core.getInput("kimi_base_url") || undefined;
     const failOn = (core.getInput("fail_on") || "critical") as
       | "critical"
@@ -61,9 +49,6 @@ async function run(): Promise<void> {
     // Override model/baseUrl from action input
     config.model = model;
     config.baseUrl = baseUrl;
-    if (maxOutputTokensInput) {
-      config.maxOutputTokens = parseMaxOutputTokens(maxOutputTokensInput);
-    }
 
     // Create model provider
     const llm = createLLMProvider({
@@ -71,7 +56,6 @@ async function run(): Promise<void> {
       provider: providerInput || config.provider,
       model: config.model,
       baseUrl: config.baseUrl,
-      maxTokens: config.maxOutputTokens,
     });
 
     // Run review
@@ -102,7 +86,7 @@ async function run(): Promise<void> {
 
     // Summary in job output
     core.summary
-      .addHeading("Kimi Code Review", 2)
+      .addHeading("FiscalCR Code Review", 2)
       .addRaw(`**Score:** ${result.score}/100\n\n`)
       .addRaw(result.summary)
       .addTable([

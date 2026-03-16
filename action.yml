@@ -1,6 +1,7 @@
-name: 'Kimi Code Reviewer'
-description: 'AI-powered code review using Moonshot Kimi with 256K context window'
-author: 'howardpen9'
+# FiscalCR — forked from howardpen9/kimi-code-reviewer
+name: 'FiscalCR'
+description: 'AI-powered, model-agnostic code review for GitHub'
+author: 'irfancoder'
 
 branding:
   icon: 'eye'
@@ -18,21 +19,18 @@ inputs:
     required: false
     default: ${{ github.token }}
   provider:
-    description: 'Model provider: kimi or openai-compatible'
+    description: 'Model provider: openai-compatible or kimi (legacy)'
     required: false
     default: 'openai-compatible'
   model:
-    description: 'Model to use (e.g., kimi-k2.5, gpt-4.1, llama-3.3-70b)'
+    description: 'Model to use (e.g., gpt-4.1, kimi-k2.5, llama-3.3-70b)'
     required: false
     default: 'kimi-k2.5'
-  max_output_tokens:
-    description: 'Optional max completion tokens for model output (advanced)'
-    required: false
   base_url:
     description: 'Generic base URL for provider API'
     required: false
   kimi_base_url:
-    description: 'Legacy: base URL for Kimi API'
+    description: 'Legacy: base URL for LLM API'
     required: false
   language:
     description: 'Review comment language (en, zh-TW, zh-CN, ja, ko)'
@@ -45,7 +43,7 @@ inputs:
   config_path:
     description: 'Path to config file (relative to repo root)'
     required: false
-    default: '.kimi-review.yml'
+    default: '.fiscalcr-review.yml'
 
 outputs:
   review_summary:

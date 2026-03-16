@@ -3,10 +3,10 @@ import { ConfigError } from '../../src/utils/errors.js';
 import { createLLMProvider } from '../../src/providers/factory.js';
 
 describe('provider factory', () => {
-  it('creates provider for kimi', () => {
+  it('creates provider for openai-compatible', () => {
     const provider = createLLMProvider({
       apiKey: 'test-key',
-      provider: 'kimi',
+      provider: 'openai-compatible',
       model: 'kimi-k2.5',
     });
 

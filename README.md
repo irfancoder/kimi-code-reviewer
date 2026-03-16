@@ -1,23 +1,19 @@
 <p align="center">
-  <h1 align="center">Kimi Code Reviewer</h1>
+  <h1 align="center">FiscalCR</h1>
   <p align="center">
-    AI-powered code review for GitHub using <strong>Moonshot Kimi</strong> with <strong>256K context window</strong>
-    <br />
-    基於 Kimi 大模型的 GitHub 智能代碼審查工具，支援 256K 超長上下文
+    AI-powered, model-agnostic code review for GitHub
   </p>
 </p>
 
 <p align="center">
   <a href="#quick-start--github-action">GitHub Action</a> ·
   <a href="#self-hosted-github-app">GitHub App</a> ·
-  <a href="#configuration">Configuration</a> ·
-  <a href="#中文說明">中文說明</a>
+  <a href="#configuration">Configuration</a>
 </p>
 
 ---
 
-> **Note:** This is a community-maintained GitHub Action for PR code review.
-> For the official Kimi Code CLI with full features (chat, flows, MCP, etc.), see [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli).
+> **Forked from [howardpen9/kimi-code-reviewer](https://github.com/howardpen9/kimi-code-reviewer).** FiscalCR extends the original with model-agnostic provider support.
 
 ## Features
 

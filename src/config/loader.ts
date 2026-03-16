@@ -5,7 +5,7 @@ import { DEFAULT_CONFIG } from './defaults.js';
 import { ConfigError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
-const CONFIG_FILENAME = '.kimi-review.yml';
+const CONFIG_FILENAME = '.fiscalcr-review.yml';
 
 export async function loadConfig(
   octokit: Octokit,
@@ -38,7 +38,7 @@ export async function loadConfig(
   } catch (err) {
     if (err instanceof ConfigError) throw err;
     // 404 — no config file, use defaults
-    logger.info('No .kimi-review.yml found, using defaults');
+    logger.info('No .fiscalcr-review.yml found, using defaults');
     return DEFAULT_CONFIG;
   }
 }
