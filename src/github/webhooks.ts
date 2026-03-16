@@ -105,7 +105,7 @@ export function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void {
           '## Kimi Code Reviewer Commands\n',
           '| Command | Description |',
           '|---------|-------------|',
-          '| `@kimi review` | Run a full code review on this PR |',
+          '| `@fiscalcr review` | Run a full code review on this PR |',
           '| `@kimi help` | Show this help message |',
           '\nPowered by Moonshot AI with 256K context window.',
         ].join('\n'),

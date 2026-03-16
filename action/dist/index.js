@@ -53459,10 +53459,10 @@ async function run() {
     }
     catch (error) {
         if (error instanceof Error) {
-            core.setFailed(`Kimi review failed: ${error.message}`);
+            core.setFailed(`FiscalCR Review failed: ${error.message}`);
         }
         else {
-            core.setFailed("Kimi review failed with unknown error");
+            core.setFailed("FiscalCR Review failed with unknown error");
         }
     }
 }

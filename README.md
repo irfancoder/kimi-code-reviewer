@@ -104,7 +104,7 @@ That's it. Every PR will now get an AI code review.
 
 ## Self-Hosted GitHub App
 
-For teams that want `@kimi review` commands in PR comments.
+For teams that want `@fiscalcr review` commands in PR comments.
 
 ### Setup
 
@@ -133,7 +133,7 @@ Comment on any PR to trigger:
 
 | Command | Description |
 |---------|-------------|
-| `@kimi review` | Run a full code review |
+| `@fiscalcr review` | Run a full code review |
 | `@kimi help` | Show available commands |
 
 ### Webhook Events
