@@ -6,7 +6,6 @@ export interface AppConfig {
     apiKey: string;
     provider?: string;
     model?: string;
-    maxOutputTokens?: number;
     baseUrl?: string;
 }
 export declare function createApp(config: AppConfig): App;

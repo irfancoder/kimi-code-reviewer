@@ -1,11 +1,11 @@
 import type { Octokit } from '@octokit/rest';
 import type { ReviewConfig } from '../config/schema.js';
-import type { ReviewResult } from '../types/review.js';
+import type { ReviewAnnotation, ReviewResult } from '../types/review.js';
 import type { LLMProvider } from '../providers/interface.js';
 import { packContext } from '../kimi/context-packer.js';
 import { buildReviewMessages } from '../kimi/prompt-builder.js';
 import { buildCacheOptimizedMessages } from '../kimi/cache-strategy.js';
-import { parseKimiResponse } from '../kimi/response-parser.js';
+import { parseAIResponse } from '../kimi/response-parser.js';
 import { extractPullRequestContext } from '../github/pulls.js';
 import { createCheckRun, completeCheckRun } from '../github/checks.js';
 import { createPRReview } from '../github/comments.js';
@@ -98,13 +98,13 @@ export class ReviewOrchestrator {
       });
 
       // Step 7: Parse response
-      const result = parseKimiResponse(response.content, response.usage);
+      const result = parseAIResponse(response.content, response.usage);
 
       // Step 8: Filter by severity
       const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
       const minIdx = minSeverityOrder.indexOf(this.config.review.minSeverity);
       result.annotations = result.annotations.filter(
-        (a) => minSeverityOrder.indexOf(a.severity) <= minIdx,
+        (a: ReviewAnnotation) => minSeverityOrder.indexOf(a.severity) <= minIdx,
       );
 
       // Step 9: Limit annotations

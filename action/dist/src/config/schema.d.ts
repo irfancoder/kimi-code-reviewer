@@ -4,7 +4,6 @@ export declare const reviewConfigSchema: z.ZodObject<{
     provider: z.ZodDefault<z.ZodEnum<["kimi", "openai-compatible"]>>;
     model: z.ZodDefault<z.ZodString>;
     baseUrl: z.ZodOptional<z.ZodString>;
-    maxOutputTokens: z.ZodOptional<z.ZodNumber>;
     review: z.ZodDefault<z.ZodObject<{
         auto: z.ZodDefault<z.ZodObject<{
             enabled: z.ZodDefault<z.ZodBoolean>;
@@ -188,13 +187,11 @@ export declare const reviewConfigSchema: z.ZodObject<{
         ttl: number;
     };
     baseUrl?: string | undefined;
-    maxOutputTokens?: number | undefined;
 }, {
     provider?: "kimi" | "openai-compatible" | undefined;
     model?: string | undefined;
     language?: "en" | "zh-TW" | "zh-CN" | "ja" | "ko" | undefined;
     baseUrl?: string | undefined;
-    maxOutputTokens?: number | undefined;
     review?: {
         auto?: {
             enabled?: boolean | undefined;

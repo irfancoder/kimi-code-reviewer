@@ -4,19 +4,17 @@ export interface OpenAICompatibleProviderConfig {
     apiKey: string;
     model: string;
     baseUrl?: string;
-    maxTokens?: number;
     temperature?: number;
     timeout?: number;
 }
 /**
  * Generic provider for OpenAI-compatible chat completion APIs.
- * Works with Kimi, OpenAI, Groq, and self-hosted compatible endpoints.
+ * Works with any OpenAI-compatible endpoint (FiscalCR, OpenAI, Groq, self-hosted, etc.).
  */
 export declare class OpenAICompatibleProvider implements LLMProvider {
     private readonly apiKey;
     private readonly model;
     private readonly baseUrl;
-    private readonly maxTokens;
     private readonly temperature;
     private readonly timeout;
     constructor(config: OpenAICompatibleProviderConfig);

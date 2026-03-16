@@ -45730,9 +45730,9 @@ function buildReviewMessages(ctx, config) {
 
 ;// CONCATENATED MODULE: ./src/kimi/cache-strategy.ts
 /**
- * Build messages in cache-optimized order for Kimi's prefix caching.
+ * Build messages in cache-optimized order for prefix caching.
  *
- * Kimi automatically caches message prefixes on the server side.
+ * The LLM provider automatically caches message prefixes on the server side.
  * Cached tokens cost $0.10/M vs $0.39/M for regular input — 75% savings.
  *
  * Strategy: Place stable content at the beginning of the message array.
@@ -50052,7 +50052,7 @@ const reviewResponseSchema = objectType({
     annotations: arrayType(annotationSchema).default([]),
 });
 /**
- * Try multiple strategies to extract a JSON object from Kimi's response.
+ * Try multiple strategies to extract a JSON object from the AI response.
  */
 function extractJson(raw) {
     // Strategy 1: Direct JSON parse
@@ -50107,13 +50107,13 @@ function extractJson(raw) {
     }
     return null;
 }
-function parseKimiResponse(raw, tokenUsage) {
-    logger.info({ rawLength: raw.length, rawPreview: raw.slice(0, 300) }, 'Parsing Kimi response');
+function parseAIResponse(raw, tokenUsage) {
+    logger.info({ rawLength: raw.length, rawPreview: raw.slice(0, 300) }, 'Parsing AI response');
     const parsed = extractJson(raw);
     if (!parsed || typeof parsed !== 'object') {
-        logger.error({ rawPreview: raw.slice(0, 500) }, 'Could not extract JSON from Kimi response');
+        logger.error({ rawPreview: raw.slice(0, 500) }, 'Could not extract JSON from AI response');
         return {
-            summary: 'Failed to parse Kimi response as JSON.',
+            summary: 'Failed to parse AI response as JSON.',
             score: 50,
             annotations: [],
             stats: { critical: 0, warning: 0, suggestion: 0, nitpick: 0 },
@@ -50136,7 +50136,7 @@ function parseKimiResponse(raw, tokenUsage) {
         };
     }
     // Schema validation failed — salvage what we can
-    logger.warn({ errors: result.error.issues }, 'Kimi response schema validation failed, salvaging');
+    logger.warn({ errors: result.error.issues }, 'AI response schema validation failed, salvaging');
     const partial = parsed;
     const summary = typeof partial.summary === 'string' ? partial.summary : 'Review completed (partial parse)';
     const score = typeof partial.score === 'number' ? Math.min(100, Math.max(0, partial.score)) : 50;
@@ -50247,7 +50247,7 @@ async function createCheckRun(octokit, params) {
     const { data } = await octokit.checks.create({
         owner: params.owner,
         repo: params.repo,
-        name: params.name ?? 'Kimi Code Review',
+        name: params.name ?? 'FiscalCR Code Review',
         head_sha: params.headSha,
         status: 'in_progress',
         started_at: new Date().toISOString(),
@@ -50358,7 +50358,7 @@ async function createPRReview(octokit, params) {
 function buildReviewBody(result) {
     const cost = calculateCost(result.tokensUsed);
     const lines = [];
-    lines.push('## 🤖 Kimi Code Review\n');
+    lines.push('## 🤖 FiscalCR Code Review\n');
     lines.push(result.summary);
     lines.push('');
     lines.push(`**Score:** ${result.score}/100`);
@@ -52898,14 +52898,14 @@ function buildSummary(result) {
 }
 
 ;// CONCATENATED MODULE: ./src/utils/errors.ts
-class KimiApiError extends Error {
+class LLMApiError extends Error {
     statusCode;
     responseBody;
     constructor(message, statusCode, responseBody) {
         super(message);
         this.statusCode = statusCode;
         this.responseBody = responseBody;
-        this.name = 'KimiApiError';
+        this.name = 'LLMApiError';
     }
 }
 class ConfigError extends Error {
@@ -52990,7 +52990,7 @@ class ReviewOrchestrator {
                 responseFormat: { type: 'json_object' },
             });
             // Step 7: Parse response
-            const result = parseKimiResponse(response.content, response.usage);
+            const result = parseAIResponse(response.content, response.usage);
             // Step 8: Filter by severity
             const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
             const minIdx = minSeverityOrder.indexOf(this.config.review.minSeverity);
@@ -53051,23 +53051,20 @@ class ReviewOrchestrator {
 ;// CONCATENATED MODULE: ./src/providers/openai-compatible.ts
 
 
-
 /**
  * Generic provider for OpenAI-compatible chat completion APIs.
- * Works with Kimi, OpenAI, Groq, and self-hosted compatible endpoints.
+ * Works with any OpenAI-compatible endpoint (FiscalCR, OpenAI, Groq, self-hosted, etc.).
  */
 class OpenAICompatibleProvider {
     apiKey;
     model;
     baseUrl;
-    maxTokens;
     temperature;
     timeout;
     constructor(config) {
         this.apiKey = config.apiKey;
         this.model = config.model;
         this.baseUrl = config.baseUrl ?? 'https://api.kimi.com/coding/v1';
-        this.maxTokens = config.maxTokens ?? 16384;
         this.temperature = config.temperature ?? 1;
         this.timeout = config.timeout ?? 300_000;
     }
@@ -53075,40 +53072,16 @@ class OpenAICompatibleProvider {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeout);
         try {
-            try {
-                return await this.performCompletionRequest(params.messages, params.responseFormat, this.maxTokens, controller.signal);
-            }
-            catch (err) {
-                if (!(err instanceof KimiApiError) || err.statusCode !== 400) {
-                    throw err;
-                }
-                const maxTotalTokens = extractMaxTotalTokens(String(err.responseBody ?? ''));
-                if (!maxTotalTokens) {
-                    throw err;
-                }
-                const retryMaxTokens = calculateSafeCompletionBudget(params.messages, maxTotalTokens, this.maxTokens);
-                if (retryMaxTokens <= 0 || retryMaxTokens >= this.maxTokens) {
-                    throw err;
-                }
-                logger.warn({
-                    model: this.model,
-                    baseUrl: this.baseUrl,
-                    originalMaxTokens: this.maxTokens,
-                    retryMaxTokens,
-                    maxTotalTokens,
-                }, 'Retrying LLM call with reduced max_tokens due to model token limit');
-                return await this.performCompletionRequest(params.messages, params.responseFormat, retryMaxTokens, controller.signal);
-            }
+            return await this.performCompletionRequest(params.messages, params.responseFormat, controller.signal);
         }
         finally {
             clearTimeout(timer);
         }
     }
-    async performCompletionRequest(messages, responseFormat, maxTokens, signal) {
+    async performCompletionRequest(messages, responseFormat, signal) {
         const body = {
             model: this.model,
             messages,
-            max_tokens: maxTokens,
             temperature: this.temperature,
             ...(responseFormat && { response_format: responseFormat }),
         };
@@ -53117,15 +53090,15 @@ class OpenAICompatibleProvider {
             headers: {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${this.apiKey}`,
-                'User-Agent': 'kimi-code-reviewer/1.0',
-                'X-Client-Name': 'kimi-code-reviewer',
+                'User-Agent': 'fiscalcr/1.0',
+                'X-Client-Name': 'fiscalcr',
             },
             body: JSON.stringify(body),
             signal,
         });
         if (!res.ok) {
             const errorBody = await res.text().catch(() => '');
-            throw new KimiApiError(`LLM API error: ${res.status} ${res.statusText}`, res.status, errorBody);
+            throw new LLMApiError(`LLM API error: ${res.status} ${res.statusText}`, res.status, errorBody);
         }
         const data = (await res.json());
         const content = data.choices?.[0]?.message?.content ?? '';
@@ -53144,44 +53117,21 @@ class OpenAICompatibleProvider {
         return { content, usage };
     }
 }
-function extractMaxTotalTokens(errorBody) {
-    const patterns = [
-        /max_model_len(?:=max_total_tokens)?=(\d+)/i,
-        /max[_\s-]?total[_\s-]?tokens[^\d]*(\d+)/i,
-    ];
-    for (const pattern of patterns) {
-        const match = errorBody.match(pattern);
-        if (match) {
-            const parsed = Number.parseInt(match[1], 10);
-            if (Number.isFinite(parsed) && parsed > 0)
-                return parsed;
-        }
-    }
-    return null;
-}
-function calculateSafeCompletionBudget(messages, maxTotalTokens, configuredMaxTokens) {
-    const promptEstimate = messages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0) +
-        messages.length * 8;
-    const safetyReserve = 64;
-    const available = maxTotalTokens - promptEstimate - safetyReserve;
-    const capped = Math.min(configuredMaxTokens, available);
-    return Math.max(0, capped);
-}
 
 ;// CONCATENATED MODULE: ./src/providers/factory.ts
 
 
-const SUPPORTED_PROVIDERS = ['kimi', 'openai-compatible'];
+const SUPPORTED_PROVIDERS = ['openai-compatible', 'kimi'];
 function parseProvider(provider) {
-    if (provider === 'kimi' || provider === 'openai-compatible') {
+    if (provider === 'openai-compatible' || provider === 'kimi') {
         return provider;
     }
     throw new ConfigError(`Invalid provider: "${provider}". Supported providers: ${SUPPORTED_PROVIDERS.join(', ')}`);
 }
 function createLLMProvider(config) {
     const provider = parseProvider(config.provider);
-    // For now, we support Kimi + any OpenAI-compatible endpoint through one adapter.
-    // Keep this switch so adding non-compatible providers (e.g., Anthropic) is straightforward.
+    // All providers share the OpenAI-compatible adapter.
+    // Adding non-compatible providers (e.g., Anthropic) is straightforward.
     switch (provider) {
         case 'openai-compatible':
         case 'kimi':
@@ -53190,7 +53140,6 @@ function createLLMProvider(config) {
                 apiKey: config.apiKey,
                 model: config.model,
                 baseUrl: config.baseUrl,
-                maxTokens: config.maxTokens,
             });
     }
 }
@@ -53204,7 +53153,6 @@ const reviewConfigSchema = objectType({
     provider: enumType(['kimi', 'openai-compatible']).default('kimi'),
     model: stringType().default('kimi-k2.5'),
     baseUrl: stringType().url().optional(),
-    maxOutputTokens: numberType().int().min(64).max(32768).optional(),
     review: objectType({
         auto: objectType({
             enabled: booleanType().default(true),
@@ -53319,7 +53267,7 @@ const DEFAULT_CONFIG = {
 
 
 
-const CONFIG_FILENAME = '.kimi-review.yml';
+const CONFIG_FILENAME = '.fiscalcr-review.yml';
 async function loadConfig(octokit, owner, repo) {
     try {
         const { data } = await octokit.repos.getContent({
@@ -53345,7 +53293,7 @@ async function loadConfig(octokit, owner, repo) {
         if (err instanceof ConfigError)
             throw err;
         // 404 — no config file, use defaults
-        logger.info('No .kimi-review.yml found, using defaults');
+        logger.info('No .fiscalcr-review.yml found, using defaults');
         return DEFAULT_CONFIG;
     }
 }
@@ -53363,16 +53311,6 @@ function parseYaml(content) {
 
 
 
-function parseMaxOutputTokens(raw) {
-    const value = Number.parseInt(raw, 10);
-    if (!Number.isFinite(value) || value <= 0) {
-        throw new Error("Invalid max_output_tokens: must be a positive integer");
-    }
-    if (value < 64 || value > 32768) {
-        throw new Error("Invalid max_output_tokens: must be between 64 and 32768");
-    }
-    return value;
-}
 async function run() {
     try {
         // Get inputs
@@ -53383,7 +53321,6 @@ async function run() {
         const githubToken = core.getInput("github_token");
         const providerInput = core.getInput("provider");
         const model = core.getInput("model") || "kimi-k2.5";
-        const maxOutputTokensInput = core.getInput("max_output_tokens");
         const baseUrl = core.getInput("base_url") || core.getInput("kimi_base_url") || undefined;
         const failOn = (core.getInput("fail_on") || "critical");
         const octokit = github.getOctokit(githubToken);
@@ -53408,16 +53345,12 @@ async function run() {
         // Override model/baseUrl from action input
         config.model = model;
         config.baseUrl = baseUrl;
-        if (maxOutputTokensInput) {
-            config.maxOutputTokens = parseMaxOutputTokens(maxOutputTokensInput);
-        }
         // Create model provider
         const llm = createLLMProvider({
             apiKey,
             provider: providerInput || config.provider,
             model: config.model,
             baseUrl: config.baseUrl,
-            maxTokens: config.maxOutputTokens,
         });
         // Run review
         const orchestrator = new ReviewOrchestrator(restOctokit, llm, config);
@@ -53435,7 +53368,7 @@ async function run() {
         core.setOutput("cost_estimate", calculateCost(result.tokensUsed).toString());
         // Summary in job output
         core.summary
-            .addHeading("Kimi Code Review", 2)
+            .addHeading("FiscalCR Code Review", 2)
             .addRaw(`**Score:** ${result.score}/100\n\n`)
             .addRaw(result.summary)
             .addTable([

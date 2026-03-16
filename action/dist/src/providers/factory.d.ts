@@ -1,10 +1,9 @@
 import type { LLMProvider } from './interface.js';
-export declare const SUPPORTED_PROVIDERS: readonly ["kimi", "openai-compatible"];
+export declare const SUPPORTED_PROVIDERS: readonly ["openai-compatible", "kimi"];
 export declare function createLLMProvider(config: {
     apiKey: string;
     model: string;
     baseUrl?: string;
-    maxTokens?: number;
     provider: string;
 }): LLMProvider;
 //# sourceMappingURL=factory.d.ts.map

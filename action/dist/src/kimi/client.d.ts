@@ -1,9 +1,8 @@
 import type { ChatMessage } from "../types/review.js";
-export interface KimiClientConfig {
+export interface AIClientConfig {
     apiKey: string;
     model?: string;
     baseUrl?: string;
-    maxTokens?: number;
     temperature?: number;
     timeout?: number;
 }
@@ -24,14 +23,13 @@ export interface ChatCompletionResponse {
         cached_tokens?: number;
     };
 }
-export declare class KimiClient {
+export declare class AIClient {
     private baseUrl;
     private apiKey;
     private model;
-    private maxTokens;
     private temperature;
     private timeout;
-    constructor(config: KimiClientConfig);
+    constructor(config: AIClientConfig);
     chatCompletion(params: {
         messages: ChatMessage[];
         responseFormat?: {
