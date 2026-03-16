@@ -6,26 +6,9 @@ describe('OpenAICompatibleProvider', () => {
     vi.restoreAllMocks();
   });
 
-  it('retries with reduced max_tokens when model reports max_total_tokens limit', async () => {
-    const initialMaxTokens = 4000;
-    const maxTotalTokens = 2048;
-
+  it('does not send an explicit max_tokens cap', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            error: {
-              message:
-                `max_tokens=${initialMaxTokens} cannot be greater than max_model_len=max_total_tokens=${maxTotalTokens}`,
-              type: 'BadRequestError',
-              param: 'max_tokens',
-              code: 400,
-            },
-          }),
-          { status: 400, statusText: 'Bad Request' },
-        ),
-      )
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -40,7 +23,6 @@ describe('OpenAICompatibleProvider', () => {
       apiKey: 'test-key',
       model: 'Qwen/Qwen2.5-3B-Instruct',
       baseUrl: 'https://chat.alifaiman.cloud/v1',
-      maxTokens: initialMaxTokens,
     });
 
     const result = await provider.chatCompletion({
@@ -55,13 +37,10 @@ describe('OpenAICompatibleProvider', () => {
     });
 
     expect(result.content).toContain('summary');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    const firstBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
 
-    expect(firstBody.max_tokens).toBe(initialMaxTokens);
-    expect(secondBody.max_tokens).toBeLessThan(initialMaxTokens);
-    expect(secondBody.max_tokens).toBeGreaterThan(0);
+    expect(body.max_tokens).toBeUndefined();
   });
 });

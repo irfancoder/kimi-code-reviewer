@@ -10,7 +10,7 @@ describe('parseAIResponse', () => {
       score: 90,
       annotations: [],
     });
-    const result = parseKimiResponse(raw, usage);
+    const result = parseAIResponse(raw, usage);
     expect(result.summary).toBe('Looks good');
     expect(result.score).toBe(90);
     expect(result.annotations).toHaveLength(0);
@@ -36,7 +36,7 @@ describe('parseAIResponse', () => {
   ]
 }
 \`\`\``;
-    const result = parseKimiResponse(raw, usage);
+  const result = parseAIResponse(raw, usage);
     expect(result.summary).toBe('Code looks clean');
     expect(result.score).toBe(85);
     expect(result.annotations).toHaveLength(1);
@@ -51,7 +51,7 @@ The changes look straightforward — adding a YAML config file.
 {"summary":"Simple config addition","score":95,"annotations":[{"path":".kimi-review.yml","startLine":1,"endLine":14,"severity":"suggestion","category":"style","title":"Consider adding comments","body":"Adding inline comments would help users understand each option"}]}
 
 That concludes my review.`;
-    const result = parseKimiResponse(raw, usage);
+  const result = parseAIResponse(raw, usage);
     expect(result.summary).toBe('Simple config addition');
     expect(result.score).toBe(95);
     expect(result.annotations).toHaveLength(1);
@@ -75,7 +75,7 @@ That concludes my review.`;
         },
       ],
     });
-    const result = parseKimiResponse(raw, usage);
+    const result = parseAIResponse(raw, usage);
     expect(result.annotations).toHaveLength(1);
     expect(result.annotations[0].startLine).toBe(5);
     expect(result.annotations[0].endLine).toBe(8);
@@ -98,7 +98,7 @@ That concludes my review.`;
         },
       ],
     });
-    const result = parseKimiResponse(raw, usage);
+    const result = parseAIResponse(raw, usage);
     expect(result.annotations[0].startLine).toBe(42);
     expect(result.annotations[0].endLine).toBe(42);
     expect(result.stats.critical).toBe(1);
@@ -133,7 +133,7 @@ That concludes my review.`;
         },
       ],
     });
-    const result = parseKimiResponse(raw, usage);
+    const result = parseAIResponse(raw, usage);
     // Schema-level parse will fail because of the bad annotation,
     // but salvage should recover the 2 valid ones
     expect(result.annotations.length).toBeGreaterThanOrEqual(2);
@@ -142,7 +142,7 @@ That concludes my review.`;
 
   it('returns fallback for completely unparseable text', () => {
     const raw = 'I cannot provide a review for this PR.';
-    const result = parseKimiResponse(raw, usage);
+    const result = parseAIResponse(raw, usage);
     expect(result.score).toBe(50);
     expect(result.annotations).toHaveLength(0);
     expect(result.tokensUsed).toEqual(usage);
