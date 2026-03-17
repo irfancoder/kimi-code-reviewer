@@ -1,7 +1,7 @@
 import type { Octokit } from '@octokit/rest';
 import type { ReviewConfig } from '../config/schema.js';
 import type { ReviewResult } from '../types/review.js';
-import { KimiClient } from '../kimi/client.js';
+import type { LLMProvider } from '../providers/interface.js';
 interface ReviewParams {
     owner: string;
     repo: string;
@@ -10,9 +10,9 @@ interface ReviewParams {
 }
 export declare class ReviewOrchestrator {
     private octokit;
-    private kimi;
+    private llm;
     private config;
-    constructor(octokit: Octokit, kimi: KimiClient, config: ReviewConfig);
+    constructor(octokit: Octokit, llm: LLMProvider, config: ReviewConfig);
     reviewPullRequest(params: ReviewParams): Promise<ReviewResult>;
 }
 export {};

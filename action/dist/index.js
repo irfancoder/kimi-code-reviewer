@@ -45730,9 +45730,9 @@ function buildReviewMessages(ctx, config) {
 
 ;// CONCATENATED MODULE: ./src/kimi/cache-strategy.ts
 /**
- * Build messages in cache-optimized order for Kimi's prefix caching.
+ * Build messages in cache-optimized order for prefix caching.
  *
- * Kimi automatically caches message prefixes on the server side.
+ * The LLM provider automatically caches message prefixes on the server side.
  * Cached tokens cost $0.10/M vs $0.39/M for regular input — 75% savings.
  *
  * Strategy: Place stable content at the beginning of the message array.
@@ -50052,7 +50052,7 @@ const reviewResponseSchema = objectType({
     annotations: arrayType(annotationSchema).default([]),
 });
 /**
- * Try multiple strategies to extract a JSON object from Kimi's response.
+ * Try multiple strategies to extract a JSON object from the AI response.
  */
 function extractJson(raw) {
     // Strategy 1: Direct JSON parse
@@ -50107,13 +50107,13 @@ function extractJson(raw) {
     }
     return null;
 }
-function parseKimiResponse(raw, tokenUsage) {
-    logger.info({ rawLength: raw.length, rawPreview: raw.slice(0, 300) }, 'Parsing Kimi response');
+function parseAIResponse(raw, tokenUsage) {
+    logger.info({ rawLength: raw.length, rawPreview: raw.slice(0, 300) }, 'Parsing AI response');
     const parsed = extractJson(raw);
     if (!parsed || typeof parsed !== 'object') {
-        logger.error({ rawPreview: raw.slice(0, 500) }, 'Could not extract JSON from Kimi response');
+        logger.error({ rawPreview: raw.slice(0, 500) }, 'Could not extract JSON from AI response');
         return {
-            summary: 'Failed to parse Kimi response as JSON.',
+            summary: 'Failed to parse AI response as JSON.',
             score: 50,
             annotations: [],
             stats: { critical: 0, warning: 0, suggestion: 0, nitpick: 0 },
@@ -50136,7 +50136,7 @@ function parseKimiResponse(raw, tokenUsage) {
         };
     }
     // Schema validation failed — salvage what we can
-    logger.warn({ errors: result.error.issues }, 'Kimi response schema validation failed, salvaging');
+    logger.warn({ errors: result.error.issues }, 'AI response schema validation failed, salvaging');
     const partial = parsed;
     const summary = typeof partial.summary === 'string' ? partial.summary : 'Review completed (partial parse)';
     const score = typeof partial.score === 'number' ? Math.min(100, Math.max(0, partial.score)) : 50;
@@ -50247,7 +50247,7 @@ async function createCheckRun(octokit, params) {
     const { data } = await octokit.checks.create({
         owner: params.owner,
         repo: params.repo,
-        name: params.name ?? 'Kimi Code Review',
+        name: params.name ?? 'FiscalCR Code Review',
         head_sha: params.headSha,
         status: 'in_progress',
         started_at: new Date().toISOString(),
@@ -50358,7 +50358,7 @@ async function createPRReview(octokit, params) {
 function buildReviewBody(result) {
     const cost = calculateCost(result.tokensUsed);
     const lines = [];
-    lines.push('## 🤖 Kimi Code Review\n');
+    lines.push('## 🤖 FiscalCR Code Review\n');
     lines.push(result.summary);
     lines.push('');
     lines.push(`**Score:** ${result.score}/100`);
@@ -52898,14 +52898,14 @@ function buildSummary(result) {
 }
 
 ;// CONCATENATED MODULE: ./src/utils/errors.ts
-class KimiApiError extends Error {
+class LLMApiError extends Error {
     statusCode;
     responseBody;
     constructor(message, statusCode, responseBody) {
         super(message);
         this.statusCode = statusCode;
         this.responseBody = responseBody;
-        this.name = 'KimiApiError';
+        this.name = 'LLMApiError';
     }
 }
 class ConfigError extends Error {
@@ -52937,11 +52937,11 @@ class ReviewError extends Error {
 
 class ReviewOrchestrator {
     octokit;
-    kimi;
+    llm;
     config;
-    constructor(octokit, kimi, config) {
+    constructor(octokit, llm, config) {
         this.octokit = octokit;
-        this.kimi = kimi;
+        this.llm = llm;
         this.config = config;
     }
     async reviewPullRequest(params) {
@@ -52983,18 +52983,14 @@ class ReviewOrchestrator {
             // Step 5: Build messages (cache-optimized order)
             const systemPrompt = buildReviewMessages(prContext, this.config)[0].content;
             const messages = buildCacheOptimizedMessages(systemPrompt, prContext, this.config, prContext.fileContents);
-            // Step 6: Call Kimi API
-            logger.info({ messageCount: messages.length }, 'Calling Kimi API');
-            const response = await this.kimi.chatCompletion({
+            // Step 6: Call LLM API
+            logger.info({ messageCount: messages.length }, 'Calling LLM API');
+            const response = await this.llm.chatCompletion({
                 messages,
                 responseFormat: { type: 'json_object' },
             });
             // Step 7: Parse response
-            const result = parseKimiResponse(response.choices[0].message.content, {
-                input: response.usage.prompt_tokens,
-                output: response.usage.completion_tokens,
-                cached: response.usage.cached_tokens ?? 0,
-            });
+            const result = parseAIResponse(response.content, response.usage);
             // Step 8: Filter by severity
             const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
             const minIdx = minSeverityOrder.indexOf(this.config.review.minSeverity);
@@ -53052,62 +53048,111 @@ class ReviewOrchestrator {
     }
 }
 
-;// CONCATENATED MODULE: ./src/kimi/client.ts
+;// CONCATENATED MODULE: ./src/providers/openai-compatible.ts
 
 
-class KimiClient {
-    baseUrl;
+/**
+ * Generic provider for OpenAI-compatible chat completion APIs.
+ * Works with any OpenAI-compatible endpoint (FiscalCR, OpenAI, Groq, self-hosted, etc.).
+ */
+class OpenAICompatibleProvider {
     apiKey;
     model;
-    maxTokens;
+    baseUrl;
     temperature;
     timeout;
     constructor(config) {
         this.apiKey = config.apiKey;
-        this.model = config.model ?? "kimi-k2.5";
-        this.baseUrl = config.baseUrl ?? "https://api.kimi.com/coding/v1";
-        this.maxTokens = config.maxTokens ?? 16384;
+        this.model = config.model;
+        if (!config.baseUrl) {
+            throw new ConfigError('OpenAI-compatible provider requires an explicit baseUrl');
+        }
+        this.baseUrl = config.baseUrl;
         this.temperature = config.temperature ?? 1;
         this.timeout = config.timeout ?? 300_000;
     }
     async chatCompletion(params) {
-        const body = {
-            model: this.model,
-            messages: params.messages,
-            max_tokens: this.maxTokens,
-            temperature: this.temperature,
-            ...(params.responseFormat && { response_format: params.responseFormat }),
-        };
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeout);
         try {
-            const res = await fetch(`${this.baseUrl}/chat/completions`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${this.apiKey}`,
-                    "User-Agent": "claude-code/1.0",
-                    "X-Client-Name": "claude-code",
-                },
-                body: JSON.stringify(body),
-                signal: controller.signal,
-            });
-            if (!res.ok) {
-                const errorBody = await res.text().catch(() => "");
-                throw new KimiApiError(`Kimi API error: ${res.status} ${res.statusText}`, res.status, errorBody);
-            }
-            const data = (await res.json());
-            logger.info({
-                model: this.model,
-                promptTokens: data.usage.prompt_tokens,
-                completionTokens: data.usage.completion_tokens,
-                cachedTokens: data.usage.cached_tokens ?? 0,
-            }, "Kimi API call completed");
-            return data;
+            return await this.performCompletionRequest(params.messages, params.responseFormat, controller.signal);
         }
         finally {
             clearTimeout(timer);
         }
+    }
+    async performCompletionRequest(messages, responseFormat, signal) {
+        const body = {
+            model: this.model,
+            messages,
+            temperature: this.temperature,
+            ...(responseFormat && { response_format: responseFormat }),
+        };
+        const res = await fetch(`${this.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.apiKey}`,
+                'User-Agent': 'fiscalcr/1.0',
+                'X-Client-Name': 'fiscalcr',
+            },
+            body: JSON.stringify(body),
+            signal,
+        });
+        if (!res.ok) {
+            const errorBody = await res.text().catch(() => '');
+            throw new LLMApiError(`LLM API error: ${res.status} ${res.statusText}`, res.status, errorBody);
+        }
+        const data = (await res.json());
+        const content = data.choices?.[0]?.message?.content ?? '';
+        const usage = {
+            input: data.usage?.prompt_tokens ?? 0,
+            output: data.usage?.completion_tokens ?? 0,
+            cached: data.usage?.cached_tokens ?? 0,
+        };
+        logger.info({
+            model: this.model,
+            baseUrl: this.baseUrl,
+            promptTokens: usage.input,
+            completionTokens: usage.output,
+            cachedTokens: usage.cached,
+        }, 'LLM API call completed');
+        return { content, usage };
+    }
+}
+
+;// CONCATENATED MODULE: ./src/providers/factory.ts
+
+
+const SUPPORTED_PROVIDERS = ['openai-compatible', 'kimi'];
+const KIMI_API_BASE_URL = 'https://api.kimi.com/coding/v1';
+function parseProvider(provider) {
+    if (provider === 'openai-compatible' || provider === 'kimi') {
+        return provider;
+    }
+    throw new ConfigError(`Invalid provider: "${provider}". Supported providers: ${SUPPORTED_PROVIDERS.join(', ')}`);
+}
+function createLLMProvider(config) {
+    const provider = parseProvider(config.provider);
+    // All providers share the OpenAI-compatible adapter.
+    // Adding non-compatible providers (e.g., Anthropic) is straightforward.
+    switch (provider) {
+        case 'openai-compatible':
+            if (!config.baseUrl) {
+                throw new ConfigError('Missing baseUrl for provider "openai-compatible". Configure an operator-controlled BASE_URL.');
+            }
+            return new OpenAICompatibleProvider({
+                apiKey: config.apiKey,
+                model: config.model,
+                baseUrl: config.baseUrl,
+            });
+        case 'kimi':
+        default:
+            return new OpenAICompatibleProvider({
+                apiKey: config.apiKey,
+                model: config.model,
+                baseUrl: config.baseUrl ?? KIMI_API_BASE_URL,
+            });
     }
 }
 
@@ -53117,6 +53162,7 @@ var dist = __nccwpck_require__(6159);
 
 const reviewConfigSchema = objectType({
     language: enumType(['en', 'zh-TW', 'zh-CN', 'ja', 'ko']).default('en'),
+    provider: enumType(['kimi', 'openai-compatible']).default('kimi'),
     model: stringType().default('kimi-k2.5'),
     baseUrl: stringType().url().optional(),
     review: objectType({
@@ -53182,6 +53228,7 @@ const reviewConfigSchema = objectType({
 ;// CONCATENATED MODULE: ./src/config/defaults.ts
 const DEFAULT_CONFIG = {
     language: 'en',
+    provider: 'kimi',
     model: 'kimi-k2.5',
     review: {
         auto: {
@@ -53232,13 +53279,20 @@ const DEFAULT_CONFIG = {
 
 
 
-const CONFIG_FILENAME = '.kimi-review.yml';
-async function loadConfig(octokit, owner, repo) {
+const CONFIG_FILENAME = '.fiscalcr-review.yml';
+function isNotFoundError(err) {
+    return (typeof err === 'object' &&
+        err !== null &&
+        'status' in err &&
+        typeof err.status === 'number' &&
+        err.status === 404);
+}
+async function loadConfig(octokit, owner, repo, configPath = CONFIG_FILENAME) {
     try {
         const { data } = await octokit.repos.getContent({
             owner,
             repo,
-            path: CONFIG_FILENAME,
+            path: configPath,
         });
         if (!('content' in data) || data.encoding !== 'base64') {
             logger.info('Config file found but not a regular file, using defaults');
@@ -53257,9 +53311,11 @@ async function loadConfig(octokit, owner, repo) {
     catch (err) {
         if (err instanceof ConfigError)
             throw err;
-        // 404 — no config file, use defaults
-        logger.info('No .kimi-review.yml found, using defaults');
-        return DEFAULT_CONFIG;
+        if (isNotFoundError(err)) {
+            logger.info({ configPath }, `No ${configPath} found, using defaults`);
+            return DEFAULT_CONFIG;
+        }
+        throw err;
     }
 }
 function parseYaml(content) {
@@ -53279,11 +53335,17 @@ function parseYaml(content) {
 async function run() {
     try {
         // Get inputs
-        const kimiApiKey = core.getInput("kimi_api_key", { required: true });
+        const apiKey = core.getInput("api_key") || core.getInput("kimi_api_key");
+        if (!apiKey) {
+            throw new Error("Missing required input: api_key (or legacy kimi_api_key)");
+        }
         const githubToken = core.getInput("github_token");
-        const model = core.getInput("model") || "kimi-k2.5";
-        const baseUrl = core.getInput("kimi_base_url") || undefined;
-        const failOn = (core.getInput("fail_on") || "critical");
+        const providerInput = core.getInput("provider") || undefined;
+        const modelInput = core.getInput("model") || undefined;
+        const baseUrlInput = core.getInput("base_url") || core.getInput("kimi_base_url") || undefined;
+        const languageInput = core.getInput("language") || undefined;
+        const configPath = core.getInput("config_path") || ".fiscalcr-review.yml";
+        const failOnInput = (core.getInput("fail_on") || undefined);
         const octokit = github.getOctokit(githubToken);
         const context = github.context;
         // Only run on pull requests
@@ -53300,17 +53362,28 @@ async function run() {
         // but our code expects @octokit/rest shape (octokit.checks, octokit.pulls, etc.)
         const restOctokit = octokit.rest;
         // Load config from repo
-        const config = await loadConfig(restOctokit, owner, repo);
-        // Override failOn from action input
-        config.review.failOn = failOn;
-        // Create Kimi client
-        const kimi = new KimiClient({
-            apiKey: kimiApiKey,
-            model,
-            baseUrl,
+        const config = await loadConfig(restOctokit, owner, repo, configPath);
+        if (languageInput) {
+            config.language = languageInput;
+        }
+        if (failOnInput) {
+            config.review.failOn = failOnInput;
+        }
+        if (modelInput) {
+            config.model = modelInput;
+        }
+        if (baseUrlInput) {
+            config.baseUrl = baseUrlInput;
+        }
+        // Create model provider
+        const llm = createLLMProvider({
+            apiKey,
+            provider: providerInput || config.provider,
+            model: config.model,
+            baseUrl: config.baseUrl,
         });
         // Run review
-        const orchestrator = new ReviewOrchestrator(restOctokit, kimi, config);
+        const orchestrator = new ReviewOrchestrator(restOctokit, llm, config);
         const result = await orchestrator.reviewPullRequest({
             owner,
             repo,
@@ -53325,7 +53398,7 @@ async function run() {
         core.setOutput("cost_estimate", calculateCost(result.tokensUsed).toString());
         // Summary in job output
         core.summary
-            .addHeading("Kimi Code Review", 2)
+            .addHeading("FiscalCR Code Review", 2)
             .addRaw(`**Score:** ${result.score}/100\n\n`)
             .addRaw(result.summary)
             .addTable([
@@ -53339,20 +53412,20 @@ async function run() {
         ]);
         await core.summary.write();
         // Fail the action if needed
-        if (failOn === "critical" && result.stats.critical > 0) {
+        if (config.review.failOn === "critical" && result.stats.critical > 0) {
             core.setFailed(`Found ${result.stats.critical} critical issue(s)`);
         }
-        else if (failOn === "warning" &&
+        else if (config.review.failOn === "warning" &&
             (result.stats.critical > 0 || result.stats.warning > 0)) {
             core.setFailed(`Found ${result.stats.critical} critical and ${result.stats.warning} warning issue(s)`);
         }
     }
     catch (error) {
         if (error instanceof Error) {
-            core.setFailed(`Kimi review failed: ${error.message}`);
+            core.setFailed(`FiscalCR Review failed: ${error.message}`);
         }
         else {
-            core.setFailed("Kimi review failed with unknown error");
+            core.setFailed("FiscalCR Review failed with unknown error");
         }
     }
 }

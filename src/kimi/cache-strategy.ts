@@ -2,9 +2,9 @@ import type { ChatMessage, PullRequestContext } from '../types/review.js';
 import type { ReviewConfig } from '../config/schema.js';
 
 /**
- * Build messages in cache-optimized order for Kimi's prefix caching.
+ * Build messages in cache-optimized order for prefix caching.
  *
- * Kimi automatically caches message prefixes on the server side.
+ * The LLM provider automatically caches message prefixes on the server side.
  * Cached tokens cost $0.10/M vs $0.39/M for regular input — 75% savings.
  *
  * Strategy: Place stable content at the beginning of the message array.

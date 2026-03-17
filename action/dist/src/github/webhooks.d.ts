@@ -1,9 +1,10 @@
 import type { Octokit } from '@octokit/rest';
 import type { Webhooks } from '@octokit/webhooks';
 interface AppContext {
-    kimiApiKey: string;
-    kimiModel?: string;
-    kimiBaseUrl?: string;
+    apiKey: string;
+    provider?: string;
+    model?: string;
+    baseUrl?: string;
     getInstallationOctokit: (installationId: number) => Promise<Octokit>;
 }
 export declare function registerWebhooks(webhooks: Webhooks, appCtx: AppContext): void;

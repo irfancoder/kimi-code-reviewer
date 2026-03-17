@@ -1,11 +1,11 @@
-export class KimiApiError extends Error {
+export class LLMApiError extends Error {
   constructor(
     message: string,
     public statusCode: number,
     public responseBody?: unknown,
   ) {
     super(message);
-    this.name = 'KimiApiError';
+    this.name = 'LLMApiError';
   }
 }
 

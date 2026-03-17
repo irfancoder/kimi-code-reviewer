@@ -4,7 +4,14 @@ dist/
 .env
 .env.local
 *.log
+*.map
 .DS_Store
 coverage/
 .vscode/
 .idea/
+
+# Cache / build metadata
+.cache/
+.eslintcache
+.npm/
+*.tsbuildinfo

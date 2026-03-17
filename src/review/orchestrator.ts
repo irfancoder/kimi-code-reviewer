@@ -1,10 +1,10 @@
 import type { Octokit } from '@octokit/rest';
 import type { ReviewConfig } from '../config/schema.js';
-import type { ReviewResult, Severity, WalkthroughResult } from '../types/review.js';
-import { KimiClient } from '../kimi/client.js';
+import type { ReviewAnnotation, ReviewResult, Severity, WalkthroughResult } from '../types/review.js';
+import type { LLMProvider } from '../providers/interface.js';
 import { packContext } from '../kimi/context-packer.js';
 import { detectLanguages, buildWalkthroughMessages, buildDeepReviewMessages } from '../kimi/prompt-builder.js';
-import { parseKimiResponse, parseWalkthroughResponse } from '../kimi/response-parser.js';
+import { parseAIResponse, parseWalkthroughResponse } from '../kimi/response-parser.js';
 import { extractPullRequestContext } from '../github/pulls.js';
 import { createCheckRun, completeCheckRun } from '../github/checks.js';
 import { createPRReview, createWalkthroughComment } from '../github/comments.js';
@@ -24,7 +24,7 @@ interface ReviewParams {
 export class ReviewOrchestrator {
   constructor(
     private octokit: Octokit,
-    private kimi: KimiClient,
+    private llm: LLMProvider,
     private config: ReviewConfig,
   ) {}
 
@@ -76,17 +76,13 @@ export class ReviewOrchestrator {
         logger.info({ pullNumber }, 'Running walkthrough pass (Pass 1)');
         try {
           const walkthroughMessages = buildWalkthroughMessages(prContext);
-          const walkthroughResponse = await this.kimi.chatCompletion({
+          const walkthroughResponse = await this.llm.chatCompletion({
             messages: walkthroughMessages,
             responseFormat: { type: 'json_object' },
           });
           walkthrough = parseWalkthroughResponse(
-            walkthroughResponse.choices[0].message.content,
-            {
-              input: walkthroughResponse.usage.prompt_tokens,
-              output: walkthroughResponse.usage.completion_tokens,
-              cached: walkthroughResponse.usage.cached_tokens ?? 0,
-            },
+            walkthroughResponse.content,
+            walkthroughResponse.usage,
           );
           // Supplement with extension-based detection for any language the model missed
           for (const lang of extensionLanguages) {
@@ -147,32 +143,26 @@ export class ReviewOrchestrator {
       logger.info({ pullNumber }, 'Running deep review pass (Pass 2)');
       const messages = buildDeepReviewMessages(prContext, this.config, walkthrough, packedFileContents);
 
-      const reviewResponse = await this.kimi.chatCompletion({
+      const reviewResponse = await this.llm.chatCompletion({
         messages,
         responseFormat: { type: 'json_object' },
       });
 
-      const reviewTokens = {
-        input: reviewResponse.usage.prompt_tokens,
-        output: reviewResponse.usage.completion_tokens,
-        cached: reviewResponse.usage.cached_tokens ?? 0,
-      };
-
       // Step 9: Parse review response
-      const result = parseKimiResponse(reviewResponse.choices[0].message.content, reviewTokens);
+      const result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
 
       // Merge token usage from both passes into the result
       result.tokensUsed = {
-        input: walkthrough.tokensUsed.input + reviewTokens.input,
-        output: walkthrough.tokensUsed.output + reviewTokens.output,
-        cached: walkthrough.tokensUsed.cached + reviewTokens.cached,
+        input: walkthrough.tokensUsed.input + reviewResponse.usage.input,
+        output: walkthrough.tokensUsed.output + reviewResponse.usage.output,
+        cached: walkthrough.tokensUsed.cached + reviewResponse.usage.cached,
       };
 
       // Step 10: Filter by minimum severity
       const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
       const minIdx = minSeverityOrder.indexOf(this.config.review.minSeverity);
       result.annotations = result.annotations.filter(
-        (a) => minSeverityOrder.indexOf(a.severity) <= minIdx,
+        (a: ReviewAnnotation) => minSeverityOrder.indexOf(a.severity) <= minIdx,
       );
 
       // Step 11: Apply config-based suppressions
@@ -207,8 +197,12 @@ export class ReviewOrchestrator {
 
       // Step 15: Create PR Review (inline comments)
       await createPRReview(this.octokit, {
-        owner, repo, pullNumber, commitSha: headSha,
-        result, failOn: this.config.review.failOn,
+        owner,
+        repo,
+        pullNumber,
+        commitSha: headSha,
+        result,
+        failOn: this.config.review.failOn,
       });
 
       logger.info(
