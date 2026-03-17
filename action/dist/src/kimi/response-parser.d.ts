@@ -1,5 +1,5 @@
 import type { ReviewResult } from '../types/review.js';
-export declare function parseKimiResponse(raw: string, tokenUsage: {
+export declare function parseAIResponse(raw: string, tokenUsage: {
     input: number;
     output: number;
     cached: number;

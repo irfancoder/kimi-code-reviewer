@@ -20,7 +20,7 @@ export async function createCheckRun(
   const { data } = await octokit.checks.create({
     owner: params.owner,
     repo: params.repo,
-    name: params.name ?? 'Kimi Code Review',
+    name: params.name ?? 'FiscalCR Code Review',
     head_sha: params.headSha,
     status: 'in_progress',
     started_at: new Date().toISOString(),

@@ -1,18 +1,25 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { ReviewOrchestrator } from "../src/review/orchestrator.js";
-import { KimiClient } from "../src/kimi/client.js";
+import { createLLMProvider } from "../src/providers/factory.js";
 import { loadConfig } from "../src/config/loader.js";
 import { calculateCost } from "../src/utils/tokens.js";
 
 async function run(): Promise<void> {
   try {
     // Get inputs
-    const kimiApiKey = core.getInput("kimi_api_key", { required: true });
+    const apiKey = core.getInput("api_key") || core.getInput("kimi_api_key");
+    if (!apiKey) {
+      throw new Error("Missing required input: api_key (or legacy kimi_api_key)");
+    }
+
     const githubToken = core.getInput("github_token");
-    const model = core.getInput("model") || "kimi-k2.5";
-    const baseUrl = core.getInput("kimi_base_url") || undefined;
-    const failOn = (core.getInput("fail_on") || "critical") as
+    const providerInput = core.getInput("provider") || undefined;
+    const modelInput = core.getInput("model") || undefined;
+    const baseUrlInput = core.getInput("base_url") || core.getInput("kimi_base_url") || undefined;
+    const languageInput = core.getInput("language") || undefined;
+    const configPath = core.getInput("config_path") || ".fiscalcr-review.yml";
+    const failOnInput = (core.getInput("fail_on") || undefined) as
       | "critical"
       | "warning"
       | "never";
@@ -38,21 +45,32 @@ async function run(): Promise<void> {
     const restOctokit = octokit.rest;
 
     // Load config from repo
-    const config = await loadConfig(restOctokit as any, owner, repo);
-    // Override failOn from action input
-    config.review.failOn = failOn;
+    const config = await loadConfig(restOctokit as any, owner, repo, configPath);
+    if (languageInput) {
+      config.language = languageInput as typeof config.language;
+    }
+    if (failOnInput) {
+      config.review.failOn = failOnInput;
+    }
+    if (modelInput) {
+      config.model = modelInput;
+    }
+    if (baseUrlInput) {
+      config.baseUrl = baseUrlInput;
+    }
 
-    // Create Kimi client
-    const kimi = new KimiClient({
-      apiKey: kimiApiKey,
-      model,
-      baseUrl,
+    // Create model provider
+    const llm = createLLMProvider({
+      apiKey,
+      provider: providerInput || config.provider,
+      model: config.model,
+      baseUrl: config.baseUrl,
     });
 
     // Run review
     const orchestrator = new ReviewOrchestrator(
       restOctokit as any,
-      kimi,
+      llm,
       config,
     );
     const result = await orchestrator.reviewPullRequest({
@@ -77,7 +95,7 @@ async function run(): Promise<void> {
 
     // Summary in job output
     core.summary
-      .addHeading("Kimi Code Review", 2)
+      .addHeading("FiscalCR Code Review", 2)
       .addRaw(`**Score:** ${result.score}/100\n\n`)
       .addRaw(result.summary)
       .addTable([
@@ -92,10 +110,10 @@ async function run(): Promise<void> {
     await core.summary.write();
 
     // Fail the action if needed
-    if (failOn === "critical" && result.stats.critical > 0) {
+    if (config.review.failOn === "critical" && result.stats.critical > 0) {
       core.setFailed(`Found ${result.stats.critical} critical issue(s)`);
     } else if (
-      failOn === "warning" &&
+      config.review.failOn === "warning" &&
       (result.stats.critical > 0 || result.stats.warning > 0)
     ) {
       core.setFailed(
@@ -104,9 +122,9 @@ async function run(): Promise<void> {
     }
   } catch (error) {
     if (error instanceof Error) {
-      core.setFailed(`Kimi review failed: ${error.message}`);
+      core.setFailed(`FiscalCR Review failed: ${error.message}`);
     } else {
-      core.setFailed("Kimi review failed with unknown error");
+      core.setFailed("FiscalCR Review failed with unknown error");
     }
   }
 }

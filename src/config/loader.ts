@@ -5,18 +5,29 @@ import { DEFAULT_CONFIG } from './defaults.js';
 import { ConfigError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
-const CONFIG_FILENAME = '.kimi-review.yml';
+const CONFIG_FILENAME = '.fiscalcr-review.yml';
+
+function isNotFoundError(err: unknown): err is { status: number } {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'status' in err &&
+    typeof (err as { status?: unknown }).status === 'number' &&
+    (err as { status: number }).status === 404
+  );
+}
 
 export async function loadConfig(
   octokit: Octokit,
   owner: string,
   repo: string,
+  configPath: string = CONFIG_FILENAME,
 ): Promise<ReviewConfig> {
   try {
     const { data } = await octokit.repos.getContent({
       owner,
       repo,
-      path: CONFIG_FILENAME,
+      path: configPath,
     });
 
     if (!('content' in data) || data.encoding !== 'base64') {
@@ -37,9 +48,12 @@ export async function loadConfig(
     return result.data;
   } catch (err) {
     if (err instanceof ConfigError) throw err;
-    // 404 — no config file, use defaults
-    logger.info('No .kimi-review.yml found, using defaults');
-    return DEFAULT_CONFIG;
+    if (isNotFoundError(err)) {
+      logger.info({ configPath }, `No ${configPath} found, using defaults`);
+      return DEFAULT_CONFIG;
+    }
+
+    throw err;
   }
 }
 

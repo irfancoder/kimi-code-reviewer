@@ -1,12 +1,11 @@
 import type { ChatMessage } from "../types/review.js";
-import { KimiApiError } from "../utils/errors.js";
+import { LLMApiError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 
-export interface KimiClientConfig {
+export interface AIClientConfig {
   apiKey: string;
   model?: string;
   baseUrl?: string;
-  maxTokens?: number;
   temperature?: number;
   timeout?: number;
 }
@@ -26,19 +25,17 @@ export interface ChatCompletionResponse {
   };
 }
 
-export class KimiClient {
+export class AIClient {
   private baseUrl: string;
   private apiKey: string;
   private model: string;
-  private maxTokens: number;
   private temperature: number;
   private timeout: number;
 
-  constructor(config: KimiClientConfig) {
+  constructor(config: AIClientConfig) {
     this.apiKey = config.apiKey;
     this.model = config.model ?? "kimi-k2.5";
     this.baseUrl = config.baseUrl ?? "https://api.kimi.com/coding/v1";
-    this.maxTokens = config.maxTokens ?? 16384;
     this.temperature = config.temperature ?? 1;
     this.timeout = config.timeout ?? 300_000;
   }
@@ -50,7 +47,6 @@ export class KimiClient {
     const body = {
       model: this.model,
       messages: params.messages,
-      max_tokens: this.maxTokens,
       temperature: this.temperature,
       ...(params.responseFormat && { response_format: params.responseFormat }),
     };
@@ -73,8 +69,8 @@ export class KimiClient {
 
       if (!res.ok) {
         const errorBody = await res.text().catch(() => "");
-        throw new KimiApiError(
-          `Kimi API error: ${res.status} ${res.statusText}`,
+        throw new LLMApiError(
+          `LLM API error: ${res.status} ${res.statusText}`,
           res.status,
           errorBody,
         );
@@ -89,7 +85,7 @@ export class KimiClient {
           completionTokens: data.usage.completion_tokens,
           cachedTokens: data.usage.cached_tokens ?? 0,
         },
-        "Kimi API call completed",
+        "LLM API call completed",
       );
 
       return data;

@@ -1,7 +1,7 @@
 {
-  "name": "kimi-code-reviewer",
+  "name": "fiscalcr",
   "version": "0.1.0",
-  "description": "AI-powered code review GitHub App & Action using Moonshot Kimi with 256K context window",
+  "description": "AI-powered, model-agnostic code review for GitHub — forked from howardpen9/kimi-code-reviewer",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

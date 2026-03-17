@@ -1,4 +1,4 @@
-export declare class KimiApiError extends Error {
+export declare class LLMApiError extends Error {
     statusCode: number;
     responseBody?: unknown | undefined;
     constructor(message: string, statusCode: number, responseBody?: unknown | undefined);

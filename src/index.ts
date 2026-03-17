@@ -14,13 +14,20 @@ server.get('/health', (c) => {
 
 // GitHub webhook endpoint
 server.post('/api/webhook', async (c) => {
+  const apiKey = process.env.API_KEY ?? process.env.FISCALCR_API_KEY ?? process.env.KIMI_API_KEY;
+  if (!apiKey) {
+    logger.error('Missing required API key configuration');
+    return c.json({ error: 'Server misconfigured: missing API key' }, 500);
+  }
+
   const app = createApp({
     githubAppId: process.env.GITHUB_APP_ID!,
     githubPrivateKey: process.env.GITHUB_PRIVATE_KEY!,
     githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
-    kimiApiKey: process.env.KIMI_API_KEY!,
-    kimiModel: process.env.KIMI_MODEL,
-    kimiBaseUrl: process.env.KIMI_BASE_URL,
+    apiKey,
+    provider: process.env.MODEL_PROVIDER,
+    model: process.env.MODEL ?? process.env.FISCALCR_MODEL ?? process.env.KIMI_MODEL,
+    baseUrl: process.env.BASE_URL ?? process.env.FISCALCR_BASE_URL ?? process.env.KIMI_BASE_URL,
   });
 
   const id = c.req.header('x-github-delivery') ?? '';
@@ -44,7 +51,7 @@ server.post('/api/webhook', async (c) => {
 
 // Start server
 serve({ fetch: server.fetch, port: PORT }, () => {
-  logger.info({ port: PORT }, 'Kimi Code Reviewer server started');
+  logger.info({ port: PORT }, 'FiscalCR server started');
 });
 
 export { server };
