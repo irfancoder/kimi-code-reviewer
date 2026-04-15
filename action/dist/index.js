@@ -53193,18 +53193,41 @@ class OpenAICompatibleProvider {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeout);
         try {
-            return await this.performCompletionRequest(params.messages, params.responseFormat, controller.signal);
+            const response = await this.performCompletionRequest(params.messages, params.responseFormat, controller.signal);
+            if (this.baseUrl.toLowerCase().includes('openrouter.ai') &&
+                params.responseFormat?.type === 'json_object' &&
+                !response.content.trim()) {
+                logger.warn({ model: this.model, baseUrl: this.baseUrl }, 'OpenRouter returned empty structured output, retrying without response_format');
+                const retryResponse = await this.performCompletionRequest(params.messages, undefined, controller.signal);
+                return retryResponse.content.trim() ? retryResponse : response;
+            }
+            return response;
         }
         finally {
             clearTimeout(timer);
         }
     }
+    extractTextContent(message) {
+        const content = message?.content;
+        if (typeof content === 'string') {
+            return content;
+        }
+        if (Array.isArray(content)) {
+            return content
+                .map((part) => (typeof part === 'string' ? part : part?.text ?? ''))
+                .join('')
+                .trim();
+        }
+        return message?.reasoning ?? message?.refusal ?? '';
+    }
     async performCompletionRequest(messages, responseFormat, signal) {
+        const isOpenRouter = this.baseUrl.toLowerCase().includes('openrouter.ai');
         const body = {
             model: this.model,
             messages,
             temperature: this.temperature,
             ...(responseFormat && { response_format: responseFormat }),
+            ...(isOpenRouter && responseFormat ? { plugins: [{ id: 'response-healing' }] } : {}),
         };
         const res = await fetch(`${this.baseUrl}/chat/completions`, {
             method: 'POST',
@@ -53222,7 +53245,8 @@ class OpenAICompatibleProvider {
             throw new LLMApiError(`LLM API error: ${res.status} ${res.statusText}`, res.status, errorBody);
         }
         const data = (await res.json());
-        const content = data.choices?.[0]?.message?.content ?? '';
+        const firstChoice = data.choices?.[0];
+        const content = this.extractTextContent(firstChoice?.message);
         const usage = {
             input: data.usage?.prompt_tokens ?? 0,
             output: data.usage?.completion_tokens ?? 0,
@@ -53234,6 +53258,7 @@ class OpenAICompatibleProvider {
             promptTokens: usage.input,
             completionTokens: usage.output,
             cachedTokens: usage.cached,
+            finishReason: firstChoice?.finish_reason ?? null,
         }, 'LLM API call completed');
         return { content, usage };
     }
