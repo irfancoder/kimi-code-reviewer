@@ -265,7 +265,7 @@ Focus on: ${aspects}
 - **nitpick**: Style preferences, minor formatting — optional
 
 ## Output Format
-Respond with a single JSON object matching this schema:
+Return only a single valid JSON object matching this schema:
 ${REVIEW_JSON_SCHEMA}
 
 ## Core Rules
