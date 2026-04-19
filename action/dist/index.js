@@ -45717,82 +45717,6 @@ function packChunked(ctx, _config) {
     };
 }
 
-;// CONCATENATED MODULE: ./src/kimi/prompt-builder.ts
-const REVIEW_JSON_SCHEMA = `{
-  "summary": "string — overall review summary in markdown",
-  "score": "number 0-100 — code quality score",
-  "annotations": [
-    {
-      "path": "string — file path relative to repo root",
-      "startLine": "number — starting line number (1-indexed)",
-      "endLine": "number — ending line number (1-indexed)",
-      "severity": "critical | warning | suggestion | nitpick",
-      "category": "bug | security | performance | style | best-practice | documentation | testing | other",
-      "title": "string — short issue title",
-      "body": "string — detailed explanation in markdown",
-      "suggestedFix": "string | null — suggested code replacement"
-    }
-  ]
-}`;
-function buildSystemPrompt(config, customRules) {
-    const aspects = Object.entries(config.review.aspects)
-        .filter(([, enabled]) => enabled)
-        .map(([name]) => name)
-        .join(', ');
-    return `You are an expert code reviewer. Analyze the pull request diff and provide structured feedback.
-
-## Review Dimensions
-Focus on: ${aspects}
-
-## Severity Definitions
-- critical: Bugs, security vulnerabilities, data loss risks — must fix before merge
-- warning: Performance issues, potential bugs, bad practices — should fix
-- suggestion: Code improvements, readability, maintainability — nice to have
-- nitpick: Style preferences, minor formatting — optional
-
-## Output Format
-Return only a single valid JSON object matching this schema:
-${REVIEW_JSON_SCHEMA}
-
-Do not wrap the JSON in markdown fences.
-Do not add explanations before or after the JSON.
-If there are no issues, still return a valid JSON object with an empty annotations array.
-
-## Rules
-- Only annotate lines that exist in the diff (added or modified lines)
-- Be specific: reference exact variable names, function names, line numbers
-- Provide actionable suggestions, not vague observations
-- suggestedFix should be the replacement code snippet, not the full file
-- Keep summary concise (2-5 sentences)
-- Score: 90-100 = excellent, 70-89 = good, 50-69 = needs improvement, <50 = significant issues
-${customRules ? `\n## Additional Rules (from repository config)\n${customRules}` : ''}`;
-}
-function buildUserPrompt(ctx, fileContents) {
-    const parts = [];
-    parts.push(`## Pull Request: ${ctx.title}\n`);
-    if (ctx.body) {
-        parts.push(`### Description\n${ctx.body}\n`);
-    }
-    // Include full file contents for context (base versions)
-    if (fileContents.size > 0) {
-        parts.push('### File Contents (for context)\n');
-        for (const [path, content] of fileContents) {
-            parts.push(`#### ${path}\n\`\`\`\n${content}\n\`\`\`\n`);
-        }
-    }
-    parts.push(`### Diff\n\`\`\`diff\n${ctx.diff}\n\`\`\`\n`);
-    return parts.join('\n');
-}
-function buildReviewMessages(ctx, config) {
-    const customRules = config.rules
-        .map((r) => `- [${r.severity}] ${r.name}: ${r.description}`)
-        .join('\n');
-    return [
-        { role: 'system', content: buildSystemPrompt(config, customRules) },
-        { role: 'user', content: buildUserPrompt(ctx, ctx.fileContents) },
-    ];
-}
-
 ;// CONCATENATED MODULE: ./src/kimi/cache-strategy.ts
 /**
  * Build messages in cache-optimized order for prefix caching.
@@ -45863,6 +45787,288 @@ function buildConfigSummary(config) {
         parts.push(`\nReview focus: ${config.prompt.reviewFocus}`);
     }
     return parts.join('\n');
+}
+
+;// CONCATENATED MODULE: ./src/kimi/prompt-builder.ts
+
+// ---------------------------------------------------------------------------
+// Language detection
+// ---------------------------------------------------------------------------
+const EXTENSION_MAP = {
+    ts: 'TypeScript',
+    tsx: 'TypeScript',
+    js: 'JavaScript',
+    jsx: 'JavaScript',
+    mjs: 'JavaScript',
+    cjs: 'JavaScript',
+    py: 'Python',
+    go: 'Go',
+    rb: 'Ruby',
+    java: 'Java',
+    kt: 'Kotlin',
+    kts: 'Kotlin',
+    rs: 'Rust',
+    cs: 'C#',
+    cpp: 'C++',
+    cc: 'C++',
+    cxx: 'C++',
+    h: 'C++',
+    hpp: 'C++',
+    c: 'C',
+    php: 'PHP',
+    swift: 'Swift',
+    scala: 'Scala',
+    sh: 'Shell',
+    bash: 'Shell',
+    sql: 'SQL',
+    yaml: 'YAML',
+    yml: 'YAML',
+};
+function detectLanguages(changedFiles) {
+    const langs = new Set();
+    for (const f of changedFiles) {
+        const ext = f.filename.split('.').pop()?.toLowerCase() ?? '';
+        const lang = EXTENSION_MAP[ext];
+        if (lang)
+            langs.add(lang);
+    }
+    return [...langs];
+}
+// ---------------------------------------------------------------------------
+// Pass 1: Walkthrough prompt
+// ---------------------------------------------------------------------------
+const WALKTHROUGH_JSON_SCHEMA = `{
+  "prSummary": "string — 2–4 sentences explaining what this PR does and why",
+  "walkthrough": [
+    {
+      "path": "string — file path relative to repo root",
+      "summary": "string — 1–2 sentences describing what logic changed in this file",
+      "changeType": "added | modified | removed | renamed"
+    }
+  ],
+  "detectedLanguages": ["string — programming languages present in the changed files"],
+  "detectedFrameworks": ["string — frameworks/libraries inferred from imports or file names"]
+}`;
+function buildWalkthroughMessages(ctx) {
+    const system = `You are a senior engineer reading a pull request for the first time.
+Your task is NOT to find bugs — it is to understand what the PR does and summarize it clearly.
+
+## Output Format
+Respond with a single JSON object matching this schema:
+${WALKTHROUGH_JSON_SCHEMA}
+
+## Instructions
+- prSummary: explain the purpose and scope of the PR in plain English (2–4 sentences)
+- walkthrough: one entry per changed file — describe what logic changed, not just "file modified"
+- detectedLanguages: list all programming languages present (e.g. TypeScript, Python, Go)
+- detectedFrameworks: list frameworks/libraries you can infer from imports or file names
+  (e.g. React, Next.js, FastAPI, Django, Express, Gin, Spring)
+- If a file was deleted, describe what was removed and why that makes sense in context
+- If there are more than 30 changed files, include entries for the 20 most significant ones
+- Do NOT flag any issues or mention code quality — this pass is purely descriptive`;
+    const fileSummary = ctx.changedFiles
+        .map((f) => `- ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`)
+        .join('\n');
+    const user = [
+        `## Pull Request #${ctx.pullNumber}: ${ctx.title}`,
+        ctx.body ? `\n### Description\n${ctx.body}` : '',
+        `\n### Changed Files (${ctx.changedFiles.length} files)\n${fileSummary}`,
+        `\n### Diff\n\`\`\`diff\n${ctx.diff}\n\`\`\``,
+        '\nSummarize this PR.',
+    ].join('\n');
+    return [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+    ];
+}
+// ---------------------------------------------------------------------------
+// Language-specific rules
+// ---------------------------------------------------------------------------
+const LANGUAGE_RULES = {
+    TypeScript: `### TypeScript / JavaScript
+- **Null safety**: prefer nullish coalescing (??) and optional chaining (?.) over loose equality (== null); flag \`as any\`, \`as unknown as X\`, and untyped parameters
+- **Async safety**: every Promise-returning call inside a non-async callback must be awaited or have .catch(); flag fire-and-forget patterns in critical paths
+- **Error handling**: empty catch blocks (\`catch {}\` or \`catch (e) {}\` with no body) silently hide bugs — flag them as critical
+- **React hooks** (if applicable): hooks must not be called conditionally; useEffect dependency arrays must be exhaustive; flag stale closures
+- **Promise semantics**: flag \`Promise.all\` when partial failure should not abort — suggest \`Promise.allSettled\`
+- **Type assertions**: flag \`as\` casts that bypass type safety without a comment explaining why`,
+    JavaScript: `### JavaScript
+- Same null/async/error rules as TypeScript
+- Flag missing \`'use strict'\` in CommonJS modules that manipulate shared state
+- Flag prototype mutation in library code`,
+    Python: `### Python
+- **Mutable default arguments**: \`def f(x=[])\` or \`def f(x={})\` is a classic bug — flag every mutable default
+- **Exception handling**: bare \`except:\` or \`except Exception: pass\` hides bugs — must be specific and handle or re-raise
+- **Resource management**: file/socket/db handles must use context managers (\`with\` statement); flag \`open()\` without \`with\`
+- **Wildcard imports**: \`from x import *\` in non-\`__init__.py\` files pollutes the namespace — flag it
+- **None comparisons**: use \`is None\` / \`is not None\`, not \`== None\``,
+    Go: `### Go
+- **Error handling**: every error return must be checked; discarding errors with \`_\` is forbidden except in tests — flag as critical
+- **Goroutine safety**: flag shared map/slice writes without mutex; flag goroutines that outlive their context
+- **Context propagation**: functions that make I/O calls must accept \`context.Context\` as the first parameter
+- **Defer in loops**: \`defer\` inside a loop does not execute until function return, not loop iteration — flag this pattern
+- **Nil pointer**: always check pointer/interface returns before dereference
+- **Panic**: \`panic()\` must not be used for normal error flows in library or service code`,
+    Ruby: `### Ruby
+- \`rescue Exception\` swallows OS signals — flag it; \`rescue StandardError\` is correct
+- Flag \`CONST = []\` — mutable constants are misleading; use \`freeze\`
+- Flag N+1 query patterns in ActiveRecord (\`.each { Model.where(...) }\`)`,
+    Java: `### Java
+- **NullPointerException**: flag missing null checks on method returns that may be null; prefer Optional
+- **Resource leaks**: streams, connections, and readers must use try-with-resources
+- **Thread safety**: flag unsynchronized access to shared mutable state across threads
+- **Optional misuse**: \`Optional.get()\` without \`isPresent()\` check is a NPE waiting to happen`,
+    Kotlin: `### Kotlin
+- Flag \`!!\` (non-null assertion) outside of test code — suggest null-safe alternatives
+- Flag \`lateinit var\` without a clear initialization guarantee
+- Coroutine scope leaks: flag \`GlobalScope.launch\` in production code`,
+    Rust: `### Rust
+- \`.unwrap()\` and \`.expect()\` are only acceptable in tests and \`main()\` — flag in library code; suggest \`?\` operator or proper error handling
+- Flag unnecessary \`.clone()\` on \`Copy\` types
+- Flag \`unsafe\` blocks without a safety comment explaining the invariant`,
+    'C#': `### C#
+- **Async void**: \`async void\` methods cannot be awaited and swallow exceptions — flag except for event handlers
+- **IDisposable**: classes owning unmanaged resources must implement \`IDisposable\` with \`using\` at call sites
+- **LINQ deferred execution**: flag patterns that enumerate a query multiple times without \`.ToList()\`/\`.ToArray()\``,
+    PHP: `### PHP
+- Flag SQL queries built with string concatenation — use prepared statements
+- Flag \`@\` error suppression operator — handle errors explicitly
+- Flag \`extract()\` and \`eval()\` — these are security risks`,
+    Swift: `### Swift
+- Flag force unwrap (\`!\`) outside of tests — use \`guard let\` or \`if let\`
+- Flag retain cycles in closures — \`[weak self]\` capture list where needed`,
+    Shell: `### Shell / Bash
+- Flag unquoted variable expansions (\`$var\` → \`"$var"\`) — word splitting bugs
+- Flag missing \`set -e\` / \`set -o pipefail\` in scripts where partial failure should abort
+- Flag \`rm -rf\` with unquoted or user-supplied path variables`,
+};
+function buildLanguageRulesSection(languages) {
+    const rules = languages.map((lang) => LANGUAGE_RULES[lang]).filter(Boolean);
+    if (rules.length === 0)
+        return '';
+    return `## Language-Specific Rules\n${rules.join('\n\n')}`;
+}
+// ---------------------------------------------------------------------------
+// Suppression rules
+// ---------------------------------------------------------------------------
+function buildSuppressionsSection(config) {
+    if (!config.suppressions || config.suppressions.length === 0)
+        return '';
+    const lines = ['## Suppression Rules — Do NOT Flag These'];
+    for (const s of config.suppressions) {
+        let line = `- "${s.pattern}"`;
+        if (s.filePattern)
+            line += ` (only suppressed in files matching: ${s.filePattern})`;
+        if (s.reason)
+            line += ` — Reason: ${s.reason}`;
+        lines.push(line);
+    }
+    lines.push('\nIf an issue matches a suppression pattern, omit it entirely from annotations.');
+    return lines.join('\n');
+}
+// ---------------------------------------------------------------------------
+// Pass 2: Deep review prompt
+// ---------------------------------------------------------------------------
+const REVIEW_JSON_SCHEMA = `{
+  "summary": "string — overall review summary in markdown (2–5 sentences)",
+  "score": "number 0-100 — code quality score",
+  "annotations": [
+    {
+      "path": "string — file path relative to repo root",
+      "startLine": "number — starting line number (1-indexed, must be a line present in the diff)",
+      "endLine": "number — ending line number (>= startLine)",
+      "severity": "critical | warning | suggestion | nitpick",
+      "category": "bug | security | performance | style | best-practice | documentation | testing | other",
+      "title": "string — short issue title (max 80 chars)",
+      "body": "string — detailed explanation in markdown; reference exact variable/function names",
+      "suggestedFix": "string | null"
+    }
+  ]
+}`;
+function buildDeepReviewMessages(ctx, config, walkthrough, fileContents) {
+    const aspects = Object.entries(config.review.aspects)
+        .filter(([, enabled]) => enabled)
+        .map(([name]) => name)
+        .join(', ');
+    const customRules = config.rules
+        .map((r) => `- [${r.severity}] ${r.name}: ${r.description}`)
+        .join('\n');
+    const langRules = buildLanguageRulesSection(walkthrough.detectedLanguages);
+    const suppressions = buildSuppressionsSection(config);
+    const walkthroughCtx = [
+        walkthrough.prSummary ? `**PR Purpose:** ${walkthrough.prSummary}` : '',
+        walkthrough.detectedLanguages.length > 0
+            ? `**Languages:** ${walkthrough.detectedLanguages.join(', ')}`
+            : '',
+        walkthrough.detectedFrameworks.length > 0
+            ? `**Frameworks:** ${walkthrough.detectedFrameworks.join(', ')}`
+            : '',
+    ]
+        .filter(Boolean)
+        .join('\n');
+    const system = `You are an expert code reviewer performing a thorough review of a pull request.
+You already understand the PR's intent from a prior analysis. Your job is to find real bugs, security vulnerabilities, and meaningful improvements — while avoiding noise.
+
+## PR Context
+${walkthroughCtx || 'No walkthrough context available.'}
+
+## Review Dimensions
+Focus on: ${aspects}
+
+## Severity Definitions
+- **critical**: Bugs that will cause failures, security vulnerabilities, data loss risks — must fix before merge
+- **warning**: Performance issues, potential bugs, bad practices — should fix
+- **suggestion**: Code improvements, readability, maintainability — nice to have
+- **nitpick**: Style preferences, minor formatting — optional
+
+## Output Format
+Return only a single valid JSON object matching this schema:
+${REVIEW_JSON_SCHEMA}
+
+## Core Rules
+- **Only annotate lines present in the diff** — lines beginning with \`+\` (added/modified). Never annotate deleted lines (\`-\`) or context lines.
+- Be specific: reference exact variable names, function names, and line numbers
+- summary describes overall quality and key themes — not a list of every finding
+- Keep annotation titles concise (under 80 characters)
+
+## CRITICAL: suggestedFix Format
+
+The \`suggestedFix\` field is rendered by GitHub as a one-click "Apply suggestion" button that **directly replaces lines startLine through endLine** in the file. It must be valid, compilable code.
+
+**GOOD example** — annotation on line 42 which contains \`const result = getValue() ?? null\`:
+\`\`\`
+"suggestedFix": "  const result = getValue() ?? undefined"
+\`\`\`
+(preserves the original indentation, is a single line because endLine == startLine)
+
+**BAD example** — this is prose, not code — it will corrupt the file if applied:
+\`\`\`
+"suggestedFix": "Replace null with undefined to match the return type"
+\`\`\`
+
+**Rules for suggestedFix:**
+1. Must be the exact replacement source code for lines startLine through endLine
+2. Preserve the original indentation exactly (spaces/tabs)
+3. Must contain exactly (endLine - startLine + 1) lines — same count as the annotated range
+4. No diff markers (+/-), no line numbers, no markdown — only the raw code
+5. Must be syntactically valid in the file's language
+6. If the fix requires structural changes spanning many lines or files, set suggestedFix to null
+
+## Precision Over Volume
+- Prefer 5 high-confidence, actionable findings over 20 speculative ones
+- Do not flag issues that are clearly intentional (TODO comments, disabled lint rules with explanations, performance trade-offs documented in comments)
+- Consider the PR's purpose: if it is a hotfix, style-level suggestions are noise; focus on correctness
+- If a pattern appears consistently across many files in this PR, it is likely intentional — flag it once as a suggestion, not as critical/warning
+- Score: 90–100 = no real bugs/security issues; 70–89 = minor warnings; 50–69 = real issues; <50 = significant bugs
+
+## False Positive Prevention
+- Read the full file content provided as context before flagging an issue — the code may be correct in context
+- Do not flag missing error handling if the caller visibly handles the error
+- Do not flag missing tests unless \`testing\` is in the review dimensions
+- Do not flag missing documentation unless \`documentation\` is in the review dimensions
+- Do not flag issues in deleted lines — they are being removed
+${langRules ? `\n${langRules}` : ''}${suppressions ? `\n\n${suppressions}` : ''}${config.prompt.reviewFocus ? `\n\n## Review Focus\n${config.prompt.reviewFocus}` : ''}${customRules ? `\n\n## Repository Rules\n${customRules}` : ''}${config.prompt.systemAppend ? `\n\n## Additional Instructions\n${config.prompt.systemAppend}` : ''}`;
+    return buildCacheOptimizedMessages(system, ctx, config, fileContents ?? ctx.fileContents);
 }
 
 ;// CONCATENATED MODULE: ./node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/helpers/util.js
@@ -50259,6 +50465,52 @@ function parseAIResponse(raw, tokenUsage) {
     }
     return { summary, score, annotations, stats, tokensUsed: tokenUsage };
 }
+// ---------------------------------------------------------------------------
+// Walkthrough response parser
+// ---------------------------------------------------------------------------
+const walkthroughFileSchema = objectType({
+    path: stringType(),
+    summary: stringType(),
+    changeType: enumType(['added', 'modified', 'removed', 'renamed']).catch('modified'),
+});
+const walkthroughResponseSchema = objectType({
+    prSummary: stringType().default(''),
+    walkthrough: arrayType(walkthroughFileSchema).default([]),
+    detectedLanguages: arrayType(stringType()).default([]),
+    detectedFrameworks: arrayType(stringType()).default([]),
+});
+function parseWalkthroughResponse(raw, tokenUsage) {
+    logger.info({ rawLength: raw.length }, 'Parsing walkthrough response');
+    const parsed = extractJson(raw);
+    if (!parsed || typeof parsed !== 'object') {
+        logger.warn('Could not extract JSON from walkthrough response, using empty result');
+        return {
+            prSummary: '',
+            walkthrough: [],
+            detectedLanguages: [],
+            detectedFrameworks: [],
+            tokensUsed: tokenUsage,
+        };
+    }
+    const result = walkthroughResponseSchema.safeParse(parsed);
+    if (result.success) {
+        return { ...result.data, tokensUsed: tokenUsage };
+    }
+    // Graceful degradation — salvage whatever fields are valid
+    logger.warn({ errors: result.error.issues }, 'Walkthrough response partial parse');
+    const partial = parsed;
+    return {
+        prSummary: typeof partial.prSummary === 'string' ? partial.prSummary : '',
+        walkthrough: [],
+        detectedLanguages: Array.isArray(partial.detectedLanguages)
+            ? partial.detectedLanguages.filter((x) => typeof x === 'string')
+            : [],
+        detectedFrameworks: Array.isArray(partial.detectedFrameworks)
+            ? partial.detectedFrameworks.filter((x) => typeof x === 'string')
+            : [],
+        tokensUsed: tokenUsage,
+    };
+}
 
 ;// CONCATENATED MODULE: ./src/github/pulls.ts
 
@@ -50502,12 +50754,126 @@ function formatAnnotationComment(a) {
     parts.push(`${SEVERITY_EMOJI[a.severity]} **[${a.severity}]** ${a.title}\n`);
     parts.push(a.body);
     if (a.suggestedFix) {
-        parts.push('\n**Suggested fix:**');
-        parts.push('```suggestion');
-        parts.push(a.suggestedFix);
-        parts.push('```');
+        // Trim leading/trailing newlines — the model sometimes adds them, which would shift the
+        // line count and prevent GitHub from rendering a one-click "Apply suggestion" button.
+        const fix = a.suggestedFix.replace(/^[\r\n]+|[\r\n]+$/g, '');
+        const fixLines = fix.split('\n').length;
+        const annotatedLines = a.endLine - a.startLine + 1;
+        if (fixLines === annotatedLines) {
+            // Valid drop-in suggestion — GitHub renders this as a one-click "Apply suggestion" button
+            parts.push('\n**Suggested fix:**');
+            parts.push('```suggestion');
+            parts.push(fix);
+            parts.push('```');
+        }
+        else {
+            // Line count mismatch — render as a plain code block to avoid corrupting the file
+            const lang = langFromPath(a.path);
+            parts.push('\n**Suggested fix** (manual apply — line count differs from annotated range):');
+            parts.push(`\`\`\`${lang}`);
+            parts.push(fix);
+            parts.push('```');
+        }
     }
     return parts.join('\n');
+}
+function langFromPath(filePath) {
+    const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+    const map = {
+        ts: 'typescript', tsx: 'typescript',
+        js: 'javascript', jsx: 'javascript', mjs: 'javascript',
+        py: 'python',
+        go: 'go',
+        rb: 'ruby',
+        java: 'java',
+        kt: 'kotlin',
+        rs: 'rust',
+        cs: 'csharp',
+        cpp: 'cpp', cc: 'cpp', cxx: 'cpp', h: 'cpp', hpp: 'cpp',
+        c: 'c',
+        php: 'php',
+        swift: 'swift',
+        sh: 'bash', bash: 'bash',
+        sql: 'sql',
+    };
+    return map[ext] ?? '';
+}
+// ---------------------------------------------------------------------------
+// Walkthrough comment
+// ---------------------------------------------------------------------------
+const WALKTHROUGH_MARKER = '## Kimi Code Review — PR Walkthrough';
+async function createWalkthroughComment(octokit, params) {
+    const { owner, repo, pullNumber, walkthrough, changedFilePaths } = params;
+    const body = buildWalkthroughBody(walkthrough, changedFilePaths);
+    try {
+        // Look for an existing walkthrough comment to update instead of stacking new ones.
+        // Paginate through all comments so we don't miss it on active PRs with >100 comments.
+        let existing;
+        for (let page = 1; !existing; page++) {
+            const { data: comments } = await octokit.issues.listComments({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                per_page: 100,
+                page,
+            });
+            existing = comments.find((c) => c.body?.includes(WALKTHROUGH_MARKER));
+            if (comments.length < 100)
+                break; // last page
+        }
+        if (existing) {
+            await octokit.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+            });
+            logger.info({ pullNumber, commentId: existing.id }, 'Walkthrough comment updated');
+        }
+        else {
+            await octokit.issues.createComment({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                body,
+            });
+            logger.info({ pullNumber }, 'Walkthrough comment created');
+        }
+    }
+    catch (err) {
+        // Walkthrough comment failure must NOT abort the review
+        logger.warn({ err }, 'Failed to post walkthrough comment, continuing');
+    }
+}
+function buildWalkthroughBody(walkthrough, changedFilePaths) {
+    const lines = [];
+    lines.push('## Kimi Code Review — PR Walkthrough\n');
+    if (walkthrough.prSummary) {
+        lines.push(walkthrough.prSummary);
+        lines.push('');
+    }
+    const tags = [...walkthrough.detectedLanguages, ...walkthrough.detectedFrameworks];
+    if (tags.length > 0) {
+        lines.push(tags.map((t) => `\`${t}\``).join(' '));
+        lines.push('');
+    }
+    // Cross-reference against actual changed files to prevent hallucinated paths
+    const actualPaths = new Set(changedFilePaths);
+    const validWalkthrough = walkthrough.walkthrough.filter((w) => actualPaths.has(w.path));
+    if (validWalkthrough.length > 0) {
+        lines.push('### Changes Walkthrough\n');
+        lines.push('| File | Summary |');
+        lines.push('|------|---------|');
+        for (const f of validWalkthrough) {
+            const icon = { added: '🆕', modified: '✏️', removed: '🗑️', renamed: '🔀' }[f.changeType] ?? '✏️';
+            const safeSummary = f.summary.replace(/\|/g, '\\|');
+            lines.push(`| ${icon} \`${f.path}\` | ${safeSummary} |`);
+        }
+        lines.push('');
+    }
+    lines.push('---');
+    lines.push('*Powered by [Kimi Code Reviewer](https://github.com/kimi-code-reviewer) — Moonshot AI 256K context*');
+    return lines.join('\n');
 }
 
 ;// CONCATENATED MODULE: ./node_modules/.pnpm/balanced-match@4.0.4/node_modules/balanced-match/dist/esm/index.js
@@ -53012,6 +53378,56 @@ function buildSummary(result) {
     return lines.join('\n');
 }
 
+;// CONCATENATED MODULE: ./src/review/annotation-utils.ts
+
+
+const SEVERITY_ORDER = {
+    critical: 0,
+    warning: 1,
+    suggestion: 2,
+    nitpick: 3,
+};
+/**
+ * Filters out annotations that match any suppression rule defined in the repo config.
+ * Matching is case-insensitive string inclusion against the annotation title + body.
+ * When a suppression has a filePattern, it only applies to files matching that glob.
+ */
+function applySuppressions(annotations, suppressions) {
+    if (!suppressions || suppressions.length === 0)
+        return annotations;
+    return annotations.filter((annotation) => {
+        const haystack = `${annotation.title} ${annotation.body}`.toLowerCase();
+        for (const suppression of suppressions) {
+            if (!haystack.includes(suppression.pattern.toLowerCase()))
+                continue;
+            if (suppression.filePattern) {
+                if (!minimatch(annotation.path, suppression.filePattern))
+                    continue;
+            }
+            logger.debug({ path: annotation.path, title: annotation.title, pattern: suppression.pattern }, 'Annotation suppressed by config rule');
+            return false;
+        }
+        return true;
+    });
+}
+/**
+ * Sorts annotations by severity (critical first), then by whether they have a
+ * suggestedFix (ones with fixes rank higher within the same severity), then
+ * truncates to maxAnnotations. Ensures the most important, most actionable
+ * issues are kept when the list is capped.
+ */
+function sortAndTruncateAnnotations(annotations, maxAnnotations) {
+    const sorted = [...annotations].sort((a, b) => {
+        const severityDiff = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
+        if (severityDiff !== 0)
+            return severityDiff;
+        const aHasFix = a.suggestedFix ? 0 : 1;
+        const bHasFix = b.suggestedFix ? 0 : 1;
+        return aHasFix - bHasFix;
+    });
+    return sorted.slice(0, maxAnnotations);
+}
+
 ;// CONCATENATED MODULE: ./src/utils/errors.ts
 class LLMApiError extends Error {
     statusCode;
@@ -53062,11 +53478,7 @@ class ReviewOrchestrator {
     async reviewPullRequest(params) {
         const { owner, repo, pullNumber, headSha } = params;
         // Step 1: Create Check Run
-        const checkRunId = await createCheckRun(this.octokit, {
-            owner,
-            repo,
-            headSha,
-        });
+        const checkRunId = await createCheckRun(this.octokit, { owner, repo, headSha });
         try {
             // Step 2: Extract PR context
             logger.info({ pullNumber }, 'Extracting PR context');
@@ -53083,55 +53495,116 @@ class ReviewOrchestrator {
                     tokensUsed: { input: 0, output: 0, cached: 0 },
                 };
                 await completeCheckRun(this.octokit, {
-                    owner,
-                    repo,
-                    checkRunId,
-                    conclusion: 'success',
-                    summary: result.summary,
-                    annotations: [],
+                    owner, repo, checkRunId, conclusion: 'success',
+                    summary: result.summary, annotations: [],
                 });
                 return result;
             }
-            // Step 4: Pack context (256K optimization)
+            // Step 4: Detect languages from file extensions (pure, no API call)
+            const extensionLanguages = detectLanguages(prContext.changedFiles);
+            logger.info({ extensionLanguages }, 'Languages detected from extensions');
+            // Step 5: Pass 1 — Walkthrough (understand PR intent, detect frameworks)
+            // Can be disabled via config.walkthrough.enabled = false to save cost/latency.
+            let walkthrough;
+            if (this.config.walkthrough.enabled) {
+                logger.info({ pullNumber }, 'Running walkthrough pass (Pass 1)');
+                try {
+                    const walkthroughMessages = buildWalkthroughMessages(prContext);
+                    const walkthroughResponse = await this.llm.chatCompletion({
+                        messages: walkthroughMessages,
+                        responseFormat: { type: 'json_object' },
+                    });
+                    walkthrough = parseWalkthroughResponse(walkthroughResponse.content, walkthroughResponse.usage);
+                    // Supplement with extension-based detection for any language the model missed
+                    for (const lang of extensionLanguages) {
+                        if (!walkthrough.detectedLanguages.includes(lang)) {
+                            walkthrough.detectedLanguages.push(lang);
+                        }
+                    }
+                    logger.info({ detectedLanguages: walkthrough.detectedLanguages, detectedFrameworks: walkthrough.detectedFrameworks }, 'Walkthrough pass complete');
+                }
+                catch (err) {
+                    logger.warn({ err }, 'Walkthrough pass failed, falling back to extension-based detection');
+                    walkthrough = {
+                        prSummary: '',
+                        walkthrough: [],
+                        detectedLanguages: extensionLanguages,
+                        detectedFrameworks: [],
+                        tokensUsed: { input: 0, output: 0, cached: 0 },
+                    };
+                }
+                // Step 6: Post/update walkthrough comment (non-blocking)
+                await createWalkthroughComment(this.octokit, {
+                    owner,
+                    repo,
+                    pullNumber,
+                    walkthrough,
+                    changedFilePaths: prContext.changedFiles.map((f) => f.filename),
+                });
+            }
+            else {
+                logger.info({ pullNumber }, 'Walkthrough pass disabled, using extension-based detection');
+                walkthrough = {
+                    prSummary: '',
+                    walkthrough: [],
+                    detectedLanguages: extensionLanguages,
+                    detectedFrameworks: [],
+                    tokensUsed: { input: 0, output: 0, cached: 0 },
+                };
+            }
+            // Step 7: Pack context — determines which file contents to include within 256K budget
             const packed = packContext(prContext, this.config);
-            logger.info({ strategy: packed.strategy, totalTokens: packed.totalTokens }, 'Context packed');
-            // Step 5: Build messages (cache-optimized order)
-            const systemPrompt = buildReviewMessages(prContext, this.config)[0].content;
-            const messages = buildCacheOptimizedMessages(systemPrompt, prContext, this.config, prContext.fileContents);
-            // Step 6: Call LLM API
-            logger.info({ messageCount: messages.length }, 'Calling LLM API');
-            const response = await this.llm.chatCompletion({
+            logger.info({ strategy: packed.strategy, totalTokens: packed.totalTokens, includedFiles: packed.includedFiles.length }, 'Context packed for Pass 2');
+            // Build a filtered fileContents map containing only the files selected by packContext.
+            // For large PRs (mixed/chunked strategy) this prevents blowing the token budget.
+            const packedFileContents = new Map();
+            for (const path of packed.includedFiles) {
+                const content = prContext.fileContents.get(path);
+                if (content)
+                    packedFileContents.set(path, content);
+            }
+            // Step 8: Pass 2 — Deep review using walkthrough context + budget-respecting file contents
+            logger.info({ pullNumber }, 'Running deep review pass (Pass 2)');
+            const messages = buildDeepReviewMessages(prContext, this.config, walkthrough, packedFileContents);
+            const reviewResponse = await this.llm.chatCompletion({
                 messages,
                 responseFormat: { type: 'json_object' },
             });
-            // Step 7: Parse response
-            const result = parseAIResponse(response.content, response.usage);
-            // Step 8: Filter by severity
+            // Step 9: Parse review response
+            const result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
+            // Merge token usage from both passes into the result
+            result.tokensUsed = {
+                input: walkthrough.tokensUsed.input + reviewResponse.usage.input,
+                output: walkthrough.tokensUsed.output + reviewResponse.usage.output,
+                cached: walkthrough.tokensUsed.cached + reviewResponse.usage.cached,
+            };
+            // Step 10: Filter by minimum severity
             const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
             const minIdx = minSeverityOrder.indexOf(this.config.review.minSeverity);
             result.annotations = result.annotations.filter((a) => minSeverityOrder.indexOf(a.severity) <= minIdx);
-            // Step 9: Limit annotations
-            if (result.annotations.length > this.config.review.maxAnnotations) {
-                result.annotations = result.annotations.slice(0, this.config.review.maxAnnotations);
-            }
-            // Step 10: Determine conclusion
+            // Step 11: Apply config-based suppressions
+            result.annotations = applySuppressions(result.annotations, this.config.suppressions);
+            // Step 12: Smart sort + truncate to maxAnnotations
+            result.annotations = sortAndTruncateAnnotations(result.annotations, this.config.review.maxAnnotations);
+            // Recompute stats after all filtering
+            const stats = { critical: 0, warning: 0, suggestion: 0, nitpick: 0 };
+            for (const a of result.annotations)
+                stats[a.severity]++;
+            result.stats = stats;
+            // Step 13: Determine conclusion
             const conclusion = this.config.review.failOn === 'critical' && result.stats.critical > 0
                 ? 'failure'
                 : this.config.review.failOn === 'warning' &&
                     (result.stats.critical > 0 || result.stats.warning > 0)
                     ? 'failure'
                     : 'success';
-            // Step 11: Update Check Run
+            // Step 14: Update Check Run
             const summaryMd = buildSummary(result);
             await completeCheckRun(this.octokit, {
-                owner,
-                repo,
-                checkRunId,
-                conclusion,
-                summary: summaryMd,
-                annotations: result.annotations,
+                owner, repo, checkRunId, conclusion,
+                summary: summaryMd, annotations: result.annotations,
             });
-            // Step 12: Create PR Review
+            // Step 15: Create PR Review (inline comments)
             await createPRReview(this.octokit, {
                 owner,
                 repo,
@@ -53148,16 +53621,15 @@ class ReviewOrchestrator {
                 score: result.score,
                 annotations: result.annotations.length,
                 conclusion,
+                contextStrategy: packed.strategy,
+                detectedLanguages: walkthrough.detectedLanguages,
             }, 'Review completed');
             return result;
         }
         catch (err) {
             logger.error({ err, pullNumber }, 'Review failed');
             await completeCheckRun(this.octokit, {
-                owner,
-                repo,
-                checkRunId,
-                conclusion: 'failure',
+                owner, repo, checkRunId, conclusion: 'failure',
                 summary: `Review failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
                 annotations: [],
             });
@@ -53364,9 +53836,19 @@ const reviewConfigSchema = objectType({
         severity: enumType(['critical', 'warning', 'suggestion']).default('warning'),
     }))
         .default([]),
+    suppressions: arrayType(objectType({
+        pattern: stringType(),
+        reason: stringType().optional(),
+        filePattern: stringType().optional(),
+    }))
+        .default([]),
     prompt: objectType({
         systemAppend: stringType().max(2000).optional(),
         reviewFocus: stringType().max(500).optional(),
+    })
+        .default({}),
+    walkthrough: objectType({
+        enabled: booleanType().default(true),
     })
         .default({}),
     cache: objectType({
@@ -53417,7 +53899,11 @@ const DEFAULT_CONFIG = {
         maxFileSize: 100_000,
     },
     rules: [],
+    suppressions: [],
     prompt: {},
+    walkthrough: {
+        enabled: true,
+    },
     cache: {
         enabled: true,
         ttl: 3600,

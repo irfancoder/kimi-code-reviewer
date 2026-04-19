@@ -122,6 +122,19 @@ export declare const reviewConfigSchema: z.ZodObject<{
         filePattern?: string | undefined;
         severity?: "critical" | "warning" | "suggestion" | undefined;
     }>, "many">>;
+    suppressions: z.ZodDefault<z.ZodArray<z.ZodObject<{
+        pattern: z.ZodString;
+        reason: z.ZodOptional<z.ZodString>;
+        filePattern: z.ZodOptional<z.ZodString>;
+    }, "strip", z.ZodTypeAny, {
+        pattern: string;
+        filePattern?: string | undefined;
+        reason?: string | undefined;
+    }, {
+        pattern: string;
+        filePattern?: string | undefined;
+        reason?: string | undefined;
+    }>, "many">>;
     prompt: z.ZodDefault<z.ZodObject<{
         systemAppend: z.ZodOptional<z.ZodString>;
         reviewFocus: z.ZodOptional<z.ZodString>;
@@ -131,6 +144,13 @@ export declare const reviewConfigSchema: z.ZodObject<{
     }, {
         systemAppend?: string | undefined;
         reviewFocus?: string | undefined;
+    }>>;
+    walkthrough: z.ZodDefault<z.ZodObject<{
+        enabled: z.ZodDefault<z.ZodBoolean>;
+    }, "strip", z.ZodTypeAny, {
+        enabled: boolean;
+    }, {
+        enabled?: boolean | undefined;
     }>>;
     cache: z.ZodDefault<z.ZodObject<{
         enabled: z.ZodDefault<z.ZodBoolean>;
@@ -178,9 +198,17 @@ export declare const reviewConfigSchema: z.ZodObject<{
         severity: "critical" | "warning" | "suggestion";
         filePattern?: string | undefined;
     }[];
+    suppressions: {
+        pattern: string;
+        filePattern?: string | undefined;
+        reason?: string | undefined;
+    }[];
     prompt: {
         systemAppend?: string | undefined;
         reviewFocus?: string | undefined;
+    };
+    walkthrough: {
+        enabled: boolean;
     };
     cache: {
         enabled: boolean;
@@ -224,9 +252,17 @@ export declare const reviewConfigSchema: z.ZodObject<{
         filePattern?: string | undefined;
         severity?: "critical" | "warning" | "suggestion" | undefined;
     }[] | undefined;
+    suppressions?: {
+        pattern: string;
+        filePattern?: string | undefined;
+        reason?: string | undefined;
+    }[] | undefined;
     prompt?: {
         systemAppend?: string | undefined;
         reviewFocus?: string | undefined;
+    } | undefined;
+    walkthrough?: {
+        enabled?: boolean | undefined;
     } | undefined;
     cache?: {
         enabled?: boolean | undefined;

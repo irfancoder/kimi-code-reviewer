@@ -1,5 +1,5 @@
 import type { Octokit } from '@octokit/rest';
-import type { ReviewResult } from '../types/review.js';
+import type { ReviewResult, WalkthroughResult } from '../types/review.js';
 export declare function createPRReview(octokit: Octokit, params: {
     owner: string;
     repo: string;
@@ -10,5 +10,12 @@ export declare function createPRReview(octokit: Octokit, params: {
     provider?: string;
     model?: string;
     baseUrl?: string;
+}): Promise<void>;
+export declare function createWalkthroughComment(octokit: Octokit, params: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    walkthrough: WalkthroughResult;
+    changedFilePaths: string[];
 }): Promise<void>;
 //# sourceMappingURL=comments.d.ts.map
