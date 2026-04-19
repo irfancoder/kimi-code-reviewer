@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ReviewResult, Severity, AnnotationCategory } from '../types/review.js';
+import type { ReviewResult, Severity, AnnotationCategory, WalkthroughResult } from '../types/review.js';
 import { logger } from '../utils/logger.js';
 
 // Accept both camelCase and snake_case field names
@@ -161,4 +161,61 @@ export function parseKimiResponse(
   }
 
   return { summary, score, annotations, stats, tokensUsed: tokenUsage };
+}
+
+// ---------------------------------------------------------------------------
+// Walkthrough response parser
+// ---------------------------------------------------------------------------
+
+const walkthroughFileSchema = z.object({
+  path: z.string(),
+  summary: z.string(),
+  changeType: z.enum(['added', 'modified', 'removed', 'renamed']).catch('modified'),
+});
+
+const walkthroughResponseSchema = z.object({
+  prSummary: z.string().default(''),
+  walkthrough: z.array(walkthroughFileSchema).default([]),
+  detectedLanguages: z.array(z.string()).default([]),
+  detectedFrameworks: z.array(z.string()).default([]),
+});
+
+export function parseWalkthroughResponse(
+  raw: string,
+  tokenUsage: { input: number; output: number; cached: number },
+): WalkthroughResult {
+  logger.info({ rawLength: raw.length }, 'Parsing walkthrough response');
+
+  const parsed = extractJson(raw);
+
+  if (!parsed || typeof parsed !== 'object') {
+    logger.warn('Could not extract JSON from walkthrough response, using empty result');
+    return {
+      prSummary: '',
+      walkthrough: [],
+      detectedLanguages: [],
+      detectedFrameworks: [],
+      tokensUsed: tokenUsage,
+    };
+  }
+
+  const result = walkthroughResponseSchema.safeParse(parsed);
+  if (result.success) {
+    return { ...result.data, tokensUsed: tokenUsage };
+  }
+
+  // Graceful degradation — salvage whatever fields are valid
+  logger.warn({ errors: result.error.issues }, 'Walkthrough response partial parse');
+  const partial = parsed as Record<string, unknown>;
+  return {
+    prSummary: typeof partial.prSummary === 'string' ? partial.prSummary : '',
+    walkthrough: [],
+    detectedLanguages: Array.isArray(partial.detectedLanguages)
+      ? (partial.detectedLanguages as string[]).filter((x) => typeof x === 'string')
+      : [],
+    detectedFrameworks: Array.isArray(partial.detectedFrameworks)
+      ? (partial.detectedFrameworks as string[]).filter((x) => typeof x === 'string')
+      : [],
+    tokensUsed: tokenUsage,
+  };
 }

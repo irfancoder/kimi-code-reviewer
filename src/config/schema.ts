@@ -69,10 +69,26 @@ export const reviewConfigSchema = z.object({
     )
     .default([]),
 
+  suppressions: z
+    .array(
+      z.object({
+        pattern: z.string(),
+        reason: z.string().optional(),
+        filePattern: z.string().optional(),
+      }),
+    )
+    .default([]),
+
   prompt: z
     .object({
       systemAppend: z.string().max(2000).optional(),
       reviewFocus: z.string().max(500).optional(),
+    })
+    .default({}),
+
+  walkthrough: z
+    .object({
+      enabled: z.boolean().default(true),
     })
     .default({}),
 

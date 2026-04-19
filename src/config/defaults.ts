@@ -39,7 +39,11 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     maxFileSize: 100_000,
   },
   rules: [],
+  suppressions: [],
   prompt: {},
+  walkthrough: {
+    enabled: true,
+  },
   cache: {
     enabled: true,
     ttl: 3600,

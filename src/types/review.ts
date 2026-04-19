@@ -1,5 +1,19 @@
 export type Severity = 'critical' | 'warning' | 'suggestion' | 'nitpick';
 
+export interface WalkthroughFile {
+  path: string;
+  summary: string;
+  changeType: 'added' | 'modified' | 'removed' | 'renamed';
+}
+
+export interface WalkthroughResult {
+  prSummary: string;
+  walkthrough: WalkthroughFile[];
+  detectedLanguages: string[];
+  detectedFrameworks: string[];
+  tokensUsed: { input: number; output: number; cached: number };
+}
+
 export type AnnotationCategory =
   | 'bug'
   | 'security'
