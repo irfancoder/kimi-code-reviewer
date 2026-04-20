@@ -1,5 +1,5 @@
-import type { ChatMessage } from '../types/review.js';
-import type { LLMCompletionResponse, LLMProvider } from './interface.js';
+import type { ChatMessage } from "../types/review.js";
+import type { LLMCompletionResponse, LLMProvider } from "./interface.js";
 export interface OpenAICompatibleProviderConfig {
     apiKey: string;
     model: string;
@@ -21,7 +21,7 @@ export declare class OpenAICompatibleProvider implements LLMProvider {
     chatCompletion(params: {
         messages: ChatMessage[];
         responseFormat?: {
-            type: 'json_object' | 'text';
+            type: "json_object" | "text";
         };
     }): Promise<LLMCompletionResponse>;
     private extractTextContent;
