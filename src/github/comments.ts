@@ -1,6 +1,7 @@
 import type { Octokit } from '@octokit/rest';
 import type { ReviewAnnotation, ReviewResult, Severity, WalkthroughResult } from '../types/review.js';
 import { calculateCost } from '../utils/tokens.js';
+import { getHttpStatus } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
 const SEVERITY_EMOJI: Record<Severity, string> = {
@@ -78,8 +79,15 @@ export async function createPRReview(
       'PR review created',
     );
   } catch (err) {
-    // If inline comments fail (e.g., line not in diff), fall back to body-only review
-    logger.warn({ err }, 'Failed to create review with inline comments, falling back');
+    // Only fall back to a body-only review when GitHub explicitly rejected the request
+    // (HTTP 422 — invalid diff positions). For other errors (network, timeout) the review
+    // may already have been created on GitHub's side, so creating another one would result
+    // in a duplicate summary comment. In those cases we re-throw instead.
+    if (getHttpStatus(err) !== 422) {
+      throw err;
+    }
+
+    logger.warn({ err }, 'Failed to create review with inline comments (422), falling back to body-only');
     await octokit.pulls.createReview({
       owner,
       repo,

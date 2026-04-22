@@ -17,6 +17,7 @@ export declare class OpenAICompatibleProvider implements LLMProvider {
     private readonly baseUrl;
     private readonly temperature;
     private readonly timeout;
+    private readonly isOpenRouter;
     constructor(config: OpenAICompatibleProviderConfig);
     chatCompletion(params: {
         messages: ChatMessage[];
@@ -24,6 +25,7 @@ export declare class OpenAICompatibleProvider implements LLMProvider {
             type: "json_object" | "text";
         };
     }): Promise<LLMCompletionResponse>;
+    private withTimeout;
     private extractTextContent;
     private performCompletionRequest;
 }

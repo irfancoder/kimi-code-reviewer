@@ -1,3 +1,10 @@
+export function getHttpStatus(err: unknown): number | undefined {
+  if (typeof err === 'object' && err !== null && 'status' in err && typeof (err as { status?: unknown }).status === 'number') {
+    return (err as { status: number }).status;
+  }
+  return undefined;
+}
+
 export class LLMApiError extends Error {
   constructor(
     message: string,

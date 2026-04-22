@@ -50658,7 +50658,40 @@ function toCheckAnnotation(a) {
     };
 }
 
+;// CONCATENATED MODULE: ./src/utils/errors.ts
+function getHttpStatus(err) {
+    if (typeof err === 'object' && err !== null && 'status' in err && typeof err.status === 'number') {
+        return err.status;
+    }
+    return undefined;
+}
+class LLMApiError extends Error {
+    statusCode;
+    responseBody;
+    constructor(message, statusCode, responseBody) {
+        super(message);
+        this.statusCode = statusCode;
+        this.responseBody = responseBody;
+        this.name = 'LLMApiError';
+    }
+}
+class ConfigError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'ConfigError';
+    }
+}
+class ReviewError extends Error {
+    phase;
+    constructor(message, phase) {
+        super(message);
+        this.phase = phase;
+        this.name = 'ReviewError';
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/github/comments.ts
+
 
 
 const SEVERITY_EMOJI = {
@@ -50706,8 +50739,14 @@ async function createPRReview(octokit, params) {
         logger.info({ pullNumber, event, commentCount: comments.length }, 'PR review created');
     }
     catch (err) {
-        // If inline comments fail (e.g., line not in diff), fall back to body-only review
-        logger.warn({ err }, 'Failed to create review with inline comments, falling back');
+        // Only fall back to a body-only review when GitHub explicitly rejected the request
+        // (HTTP 422 — invalid diff positions). For other errors (network, timeout) the review
+        // may already have been created on GitHub's side, so creating another one would result
+        // in a duplicate summary comment. In those cases we re-throw instead.
+        if (getHttpStatus(err) !== 422) {
+            throw err;
+        }
+        logger.warn({ err }, 'Failed to create review with inline comments (422), falling back to body-only');
         await octokit.pulls.createReview({
             owner,
             repo,
@@ -53428,32 +53467,6 @@ function sortAndTruncateAnnotations(annotations, maxAnnotations) {
     return sorted.slice(0, maxAnnotations);
 }
 
-;// CONCATENATED MODULE: ./src/utils/errors.ts
-class LLMApiError extends Error {
-    statusCode;
-    responseBody;
-    constructor(message, statusCode, responseBody) {
-        super(message);
-        this.statusCode = statusCode;
-        this.responseBody = responseBody;
-        this.name = 'LLMApiError';
-    }
-}
-class ConfigError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'ConfigError';
-    }
-}
-class ReviewError extends Error {
-    phase;
-    constructor(message, phase) {
-        super(message);
-        this.phase = phase;
-        this.name = 'ReviewError';
-    }
-}
-
 ;// CONCATENATED MODULE: ./src/review/orchestrator.ts
 
 
@@ -53651,6 +53664,7 @@ class OpenAICompatibleProvider {
     baseUrl;
     temperature;
     timeout;
+    isOpenRouter;
     constructor(config) {
         this.apiKey = config.apiKey;
         this.model = config.model;
@@ -53659,21 +53673,25 @@ class OpenAICompatibleProvider {
         }
         this.baseUrl = config.baseUrl;
         this.temperature = config.temperature ?? 0.2;
-        this.timeout = config.timeout ?? 300_000;
+        this.timeout = config.timeout ?? 600_000;
+        this.isOpenRouter = this.baseUrl.toLowerCase().includes("openrouter.ai");
     }
     async chatCompletion(params) {
+        const response = await this.withTimeout((signal) => this.performCompletionRequest(params.messages, params.responseFormat, signal));
+        if (this.isOpenRouter &&
+            params.responseFormat?.type === "json_object" &&
+            !response.content.trim()) {
+            logger.warn({ model: this.model, baseUrl: this.baseUrl }, "OpenRouter returned empty structured output, retrying without response_format");
+            const retryResponse = await this.withTimeout((signal) => this.performCompletionRequest(params.messages, undefined, signal));
+            return retryResponse.content.trim() ? retryResponse : response;
+        }
+        return response;
+    }
+    async withTimeout(fn) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeout);
         try {
-            const response = await this.performCompletionRequest(params.messages, params.responseFormat, controller.signal);
-            if (this.baseUrl.toLowerCase().includes("openrouter.ai") &&
-                params.responseFormat?.type === "json_object" &&
-                !response.content.trim()) {
-                logger.warn({ model: this.model, baseUrl: this.baseUrl }, "OpenRouter returned empty structured output, retrying without response_format");
-                const retryResponse = await this.performCompletionRequest(params.messages, undefined, controller.signal);
-                return retryResponse.content.trim() ? retryResponse : response;
-            }
-            return response;
+            return await fn(controller.signal);
         }
         finally {
             clearTimeout(timer);
@@ -53693,7 +53711,7 @@ class OpenAICompatibleProvider {
         return message?.reasoning ?? message?.refusal ?? "";
     }
     async performCompletionRequest(messages, responseFormat, signal) {
-        const isOpenRouter = this.baseUrl.toLowerCase().includes("openrouter.ai");
+        const isOpenRouter = this.isOpenRouter;
         const body = {
             model: this.model,
             messages,

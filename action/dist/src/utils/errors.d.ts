@@ -1,3 +1,4 @@
+export declare function getHttpStatus(err: unknown): number | undefined;
 export declare class LLMApiError extends Error {
     statusCode: number;
     responseBody?: unknown | undefined;

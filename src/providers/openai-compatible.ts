@@ -38,6 +38,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly baseUrl: string;
   private readonly temperature: number;
   private readonly timeout: number;
+  private readonly isOpenRouter: boolean;
 
   constructor(config: OpenAICompatibleProviderConfig) {
     this.apiKey = config.apiKey;
@@ -49,43 +50,43 @@ export class OpenAICompatibleProvider implements LLMProvider {
     }
     this.baseUrl = config.baseUrl;
     this.temperature = config.temperature ?? 0.2;
-    this.timeout = config.timeout ?? 300_000;
+    this.timeout = config.timeout ?? 600_000;
+    this.isOpenRouter = this.baseUrl.toLowerCase().includes("openrouter.ai");
   }
 
   async chatCompletion(params: {
     messages: ChatMessage[];
     responseFormat?: { type: "json_object" | "text" };
   }): Promise<LLMCompletionResponse> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeout);
+    const response = await this.withTimeout((signal) =>
+      this.performCompletionRequest(params.messages, params.responseFormat, signal),
+    );
 
-    try {
-      const response = await this.performCompletionRequest(
-        params.messages,
-        params.responseFormat,
-        controller.signal,
+    if (
+      this.isOpenRouter &&
+      params.responseFormat?.type === "json_object" &&
+      !response.content.trim()
+    ) {
+      logger.warn(
+        { model: this.model, baseUrl: this.baseUrl },
+        "OpenRouter returned empty structured output, retrying without response_format",
       );
 
-      if (
-        this.baseUrl.toLowerCase().includes("openrouter.ai") &&
-        params.responseFormat?.type === "json_object" &&
-        !response.content.trim()
-      ) {
-        logger.warn(
-          { model: this.model, baseUrl: this.baseUrl },
-          "OpenRouter returned empty structured output, retrying without response_format",
-        );
+      const retryResponse = await this.withTimeout((signal) =>
+        this.performCompletionRequest(params.messages, undefined, signal),
+      );
 
-        const retryResponse = await this.performCompletionRequest(
-          params.messages,
-          undefined,
-          controller.signal,
-        );
+      return retryResponse.content.trim() ? retryResponse : response;
+    }
 
-        return retryResponse.content.trim() ? retryResponse : response;
-      }
+    return response;
+  }
 
-      return response;
+  private async withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+    try {
+      return await fn(controller.signal);
     } finally {
       clearTimeout(timer);
     }
@@ -115,7 +116,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     responseFormat: { type: "json_object" | "text" } | undefined,
     signal: AbortSignal,
   ): Promise<LLMCompletionResponse> {
-    const isOpenRouter = this.baseUrl.toLowerCase().includes("openrouter.ai");
+    const isOpenRouter = this.isOpenRouter;
     const body = {
       model: this.model,
       messages,
