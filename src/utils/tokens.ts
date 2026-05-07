@@ -99,6 +99,19 @@ function resolvePricingEntry(options?: {
 }
 
 /**
+ * Sum two or more token usage objects into one.
+ */
+export function sumTokenUsage(
+  ...usages: Array<{ input: number; output: number; cached: number }>
+): { input: number; output: number; cached: number } {
+  return {
+    input: usages.reduce((s, u) => s + u.input, 0),
+    output: usages.reduce((s, u) => s + u.output, 0),
+    cached: usages.reduce((s, u) => s + u.cached, 0),
+  };
+}
+
+/**
  * Calculate API cost in USD based on token usage.
  */
 export function calculateCost(

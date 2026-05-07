@@ -11,6 +11,7 @@ import { createPRReview, createWalkthroughComment } from '../github/comments.js'
 import { filterFiles } from './file-filter.js';
 import { buildSummary } from './summary-builder.js';
 import { applySuppressions, sortAndTruncateAnnotations } from './annotation-utils.js';
+import { sumTokenUsage } from '../utils/tokens.js';
 import { ReviewError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
@@ -150,25 +151,19 @@ export class ReviewOrchestrator {
 
       // Step 9: Parse review response — retry once if JSON extraction failed entirely
       let result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
+      let reviewUsage = reviewResponse.usage;
       if (result.parseError) {
         logger.warn({ pullNumber }, 'AI response JSON extraction failed, retrying deep review pass');
         const retryResponse = await this.llm.chatCompletion({
           messages,
           responseFormat: { type: 'json_object' },
         });
-        result = parseAIResponse(retryResponse.content, {
-          input: reviewResponse.usage.input + retryResponse.usage.input,
-          output: reviewResponse.usage.output + retryResponse.usage.output,
-          cached: reviewResponse.usage.cached + retryResponse.usage.cached,
-        });
+        reviewUsage = sumTokenUsage(reviewResponse.usage, retryResponse.usage);
+        result = parseAIResponse(retryResponse.content, reviewUsage);
       }
 
       // Merge token usage from both passes into the result
-      result.tokensUsed = {
-        input: walkthrough.tokensUsed.input + reviewResponse.usage.input,
-        output: walkthrough.tokensUsed.output + reviewResponse.usage.output,
-        cached: walkthrough.tokensUsed.cached + reviewResponse.usage.cached,
-      };
+      result.tokensUsed = sumTokenUsage(walkthrough.tokensUsed, reviewUsage);
 
       // Step 10: Filter by minimum severity
       const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
