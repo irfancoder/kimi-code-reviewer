@@ -74584,35 +74584,35 @@ class ReviewError extends Error {
 
 
 const SEVERITY_EMOJI = {
-    critical: '🔴',
-    warning: '🟡',
-    suggestion: '🔵',
-    nitpick: '⚪',
+    critical: "🔴",
+    warning: "🟡",
+    suggestion: "🔵",
+    nitpick: "⚪",
 };
 function getProviderLabel(pricingContext) {
-    const provider = pricingContext?.provider ?? 'kimi';
+    const provider = pricingContext?.provider ?? "kimi";
     const baseUrl = pricingContext?.baseUrl;
-    if (baseUrl?.toLowerCase().includes('openrouter.ai')) {
-        return 'openrouter';
+    if (baseUrl?.toLowerCase().includes("openrouter.ai")) {
+        return "openrouter";
     }
     return provider;
 }
 async function createPRReview(octokit, params) {
-    const { owner, repo, pullNumber, commitSha, result, failOn, provider, model, baseUrl } = params;
-    const shouldRequestChanges = failOn === 'critical'
+    const { owner, repo, pullNumber, commitSha, result, failOn, provider, model, baseUrl, } = params;
+    const shouldRequestChanges = failOn === "critical"
         ? result.stats.critical > 0
-        : failOn === 'warning'
+        : failOn === "warning"
             ? result.stats.critical > 0 || result.stats.warning > 0
             : false;
-    const event = shouldRequestChanges ? 'REQUEST_CHANGES' : 'COMMENT';
+    const event = shouldRequestChanges ? "REQUEST_CHANGES" : "COMMENT";
     const body = buildReviewBody(result, { provider, model, baseUrl });
     // Create the review with inline comments
     const comments = result.annotations
-        .filter((a) => a.severity !== 'nitpick') // nitpicks only go to Check annotations
+        .filter((a) => a.severity !== "nitpick") // nitpicks only go to Check annotations
         .map((a) => ({
         path: a.path,
         line: a.endLine,
-        side: 'RIGHT',
+        side: "RIGHT",
         body: formatAnnotationComment(a),
     }));
     try {
@@ -74625,7 +74625,7 @@ async function createPRReview(octokit, params) {
             body,
             comments,
         });
-        logger.info({ pullNumber, event, commentCount: comments.length }, 'PR review created');
+        logger.info({ pullNumber, event, commentCount: comments.length }, "PR review created");
     }
     catch (err) {
         // Only fall back to a body-only review when GitHub explicitly rejected the request
@@ -74635,47 +74635,48 @@ async function createPRReview(octokit, params) {
         if (getHttpStatus(err) !== 422) {
             throw err;
         }
-        logger.warn({ err }, 'Failed to create review with inline comments (422), falling back to body-only');
+        logger.warn({ err }, "Failed to create review with inline comments (422), falling back to body-only");
         await octokit.pulls.createReview({
             owner,
             repo,
             pull_number: pullNumber,
             commit_id: commitSha,
             event,
-            body: body + '\n\n> _Note: Some inline comments could not be placed on the diff._',
+            body: body +
+                "\n\n> _Note: Some inline comments could not be placed on the diff._",
         });
     }
 }
 function buildReviewBody(result, pricingContext) {
     const cost = calculateCost(result.tokensUsed, pricingContext);
     const providerLabel = getProviderLabel(pricingContext);
-    const modelLabel = pricingContext?.model ?? 'default';
+    const modelLabel = pricingContext?.model ?? "default";
     const lines = [];
-    lines.push('## 🤖 FiscalCR Code Review\n');
+    lines.push("## 🤖 FiscalCR Code Review\n");
     lines.push(result.summary);
-    lines.push('');
+    lines.push("");
     lines.push(`**Score:** ${result.score}/100`);
     lines.push(`**Provider:** ${providerLabel}`);
     lines.push(`**Model:** ${modelLabel}`);
-    lines.push('');
-    lines.push('| Severity | Count |');
-    lines.push('|----------|-------|');
+    lines.push("");
+    lines.push("| Severity | Count |");
+    lines.push("|----------|-------|");
     for (const [severity, count] of Object.entries(result.stats)) {
         if (count > 0) {
             lines.push(`| ${SEVERITY_EMOJI[severity]} ${severity} | ${count} |`);
         }
     }
-    lines.push('');
-    lines.push('<details>');
-    lines.push('<summary>Token Usage & Cost</summary>\n');
+    lines.push("");
+    lines.push("<details>");
+    lines.push("<summary>Token Usage & Cost</summary>\n");
     lines.push(`- Input: ${result.tokensUsed.input.toLocaleString()} tokens`);
     lines.push(`- Output: ${result.tokensUsed.output.toLocaleString()} tokens`);
     lines.push(`- Cached: ${result.tokensUsed.cached.toLocaleString()} tokens`);
     lines.push(`- Estimated cost: $${cost}`);
-    lines.push('</details>\n');
-    lines.push('---');
-    lines.push('*Powered by [Kimi Code Reviewer](https://github.com/kimi-code-reviewer/kimi-code-reviewer) — Moonshot AI 256K context*');
-    return lines.join('\n');
+    lines.push("</details>\n");
+    lines.push("---");
+    lines.push("*Powered by [Kimi Code Reviewer](https://github.com/kimi-code-reviewer/kimi-code-reviewer) — Moonshot AI 256K context*");
+    return lines.join("\n");
 }
 function formatAnnotationComment(a) {
     const parts = [];
@@ -74684,55 +74685,63 @@ function formatAnnotationComment(a) {
     if (a.suggestedFix) {
         // Trim leading/trailing newlines — the model sometimes adds them, which would shift the
         // line count and prevent GitHub from rendering a one-click "Apply suggestion" button.
-        const fix = a.suggestedFix.replace(/^[\r\n]+|[\r\n]+$/g, '');
-        const fixLines = fix.split('\n').length;
+        const fix = a.suggestedFix.replace(/^[\r\n]+|[\r\n]+$/g, "");
+        const fixLines = fix.split("\n").length;
         const annotatedLines = a.endLine - a.startLine + 1;
         if (fixLines === annotatedLines) {
             // Valid drop-in suggestion — GitHub renders this as a one-click "Apply suggestion" button
-            parts.push('\n**Suggested fix:**');
-            parts.push('```suggestion');
+            parts.push("\n**Suggested fix:**");
+            parts.push("```suggestion");
             parts.push(fix);
-            parts.push('```');
+            parts.push("```");
         }
         else {
             // Line count mismatch — render as a plain code block to avoid corrupting the file
             const lang = langFromPath(a.path);
-            parts.push('\n**Suggested fix** (manual apply — line count differs from annotated range):');
+            parts.push("\n**Suggested fix** (manual apply — line count differs from annotated range):");
             parts.push(`\`\`\`${lang}`);
             parts.push(fix);
-            parts.push('```');
+            parts.push("```");
         }
     }
-    return parts.join('\n');
+    return parts.join("\n");
 }
 function langFromPath(filePath) {
-    const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+    const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
     const map = {
-        ts: 'typescript', tsx: 'typescript',
-        js: 'javascript', jsx: 'javascript', mjs: 'javascript',
-        py: 'python',
-        go: 'go',
-        rb: 'ruby',
-        java: 'java',
-        kt: 'kotlin',
-        rs: 'rust',
-        cs: 'csharp',
-        cpp: 'cpp', cc: 'cpp', cxx: 'cpp', h: 'cpp', hpp: 'cpp',
-        c: 'c',
-        php: 'php',
-        swift: 'swift',
-        sh: 'bash', bash: 'bash',
-        sql: 'sql',
+        ts: "typescript",
+        tsx: "typescript",
+        js: "javascript",
+        jsx: "javascript",
+        mjs: "javascript",
+        py: "python",
+        go: "go",
+        rb: "ruby",
+        java: "java",
+        kt: "kotlin",
+        rs: "rust",
+        cs: "csharp",
+        cpp: "cpp",
+        cc: "cpp",
+        cxx: "cpp",
+        h: "cpp",
+        hpp: "cpp",
+        c: "c",
+        php: "php",
+        swift: "swift",
+        sh: "bash",
+        bash: "bash",
+        sql: "sql",
     };
-    return map[ext] ?? '';
+    return map[ext] ?? "";
 }
 // ---------------------------------------------------------------------------
 // Walkthrough comment
 // ---------------------------------------------------------------------------
-const WALKTHROUGH_MARKER = '## Kimi Code Review — PR Walkthrough';
+const WALKTHROUGH_MARKER = "## PR Walkthrough";
 async function createWalkthroughComment(octokit, params) {
-    const { owner, repo, pullNumber, walkthrough, changedFilePaths } = params;
-    const body = buildWalkthroughBody(walkthrough, changedFilePaths);
+    const { owner, repo, pullNumber, headSha, walkthrough, changedFilePaths } = params;
+    const body = buildWalkthroughBody(walkthrough, changedFilePaths, { owner, repo, headSha });
     try {
         // Look for an existing walkthrough comment to update instead of stacking new ones.
         // Paginate through all comments so we don't miss it on active PRs with >100 comments.
@@ -74756,7 +74765,7 @@ async function createWalkthroughComment(octokit, params) {
                 comment_id: existing.id,
                 body,
             });
-            logger.info({ pullNumber, commentId: existing.id }, 'Walkthrough comment updated');
+            logger.info({ pullNumber, commentId: existing.id }, "Walkthrough comment updated");
         }
         else {
             await octokit.issues.createComment({
@@ -74765,43 +74774,49 @@ async function createWalkthroughComment(octokit, params) {
                 issue_number: pullNumber,
                 body,
             });
-            logger.info({ pullNumber }, 'Walkthrough comment created');
+            logger.info({ pullNumber }, "Walkthrough comment created");
         }
     }
     catch (err) {
         // Walkthrough comment failure must NOT abort the review
-        logger.warn({ err }, 'Failed to post walkthrough comment, continuing');
+        logger.warn({ err }, "Failed to post walkthrough comment, continuing");
     }
 }
-function buildWalkthroughBody(walkthrough, changedFilePaths) {
+function buildWalkthroughBody(walkthrough, changedFilePaths, repoContext) {
     const lines = [];
-    lines.push('## Kimi Code Review — PR Walkthrough\n');
+    lines.push("## PR Walkthrough\n");
     if (walkthrough.prSummary) {
         lines.push(walkthrough.prSummary);
-        lines.push('');
+        lines.push("");
     }
-    const tags = [...walkthrough.detectedLanguages, ...walkthrough.detectedFrameworks];
+    const tags = [
+        ...walkthrough.detectedLanguages,
+        ...walkthrough.detectedFrameworks,
+    ];
     if (tags.length > 0) {
-        lines.push(tags.map((t) => `\`${t}\``).join(' '));
-        lines.push('');
+        lines.push(tags.map((t) => `\`${t}\``).join(" "));
+        lines.push("");
     }
     // Cross-reference against actual changed files to prevent hallucinated paths
     const actualPaths = new Set(changedFilePaths);
-    const validWalkthrough = walkthrough.walkthrough.filter((w) => actualPaths.has(w.path));
+    const changeTypeOrder = { added: 0, modified: 1, removed: 2, renamed: 3 };
+    const validWalkthrough = walkthrough.walkthrough
+        .filter((w) => actualPaths.has(w.path))
+        .sort((a, b) => (changeTypeOrder[a.changeType] ?? 1) - (changeTypeOrder[b.changeType] ?? 1));
     if (validWalkthrough.length > 0) {
-        lines.push('### Changes Walkthrough\n');
-        lines.push('| File | Summary |');
-        lines.push('|------|---------|');
+        lines.push("### Changes Walkthrough\n");
         for (const f of validWalkthrough) {
-            const icon = { added: '🆕', modified: '✏️', removed: '🗑️', renamed: '🔀' }[f.changeType] ?? '✏️';
-            const safeSummary = f.summary.replace(/\|/g, '\\|');
-            lines.push(`| ${icon} \`${f.path}\` | ${safeSummary} |`);
+            const icon = { added: "🆕", modified: "✏️", removed: "🗑️", renamed: "🔀" }[f.changeType] ?? "✏️";
+            const fileLink = repoContext
+                ? `[${f.path}](https://github.com/${repoContext.owner}/${repoContext.repo}/blob/${repoContext.headSha}/${f.path})`
+                : `\`${f.path}\``;
+            lines.push(`- ${icon} ${f.summary} ${fileLink}`);
         }
-        lines.push('');
+        lines.push("");
     }
-    lines.push('---');
-    lines.push('*Powered by [Kimi Code Reviewer](https://github.com/kimi-code-reviewer) — Moonshot AI 256K context*');
-    return lines.join('\n');
+    lines.push("---");
+    lines.push("*Powered by [Kimi Code Reviewer](https://github.com/kimi-code-reviewer) — Moonshot AI 256K context*");
+    return lines.join("\n");
 }
 
 ;// CONCATENATED MODULE: ./node_modules/.pnpm/balanced-match@4.0.4/node_modules/balanced-match/dist/esm/index.js
@@ -77441,6 +77456,7 @@ class ReviewOrchestrator {
                     owner,
                     repo,
                     pullNumber,
+                    headSha,
                     walkthrough,
                     changedFilePaths: prContext.changedFiles.map((f) => f.filename),
                 });
