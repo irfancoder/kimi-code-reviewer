@@ -199,6 +199,35 @@ function buildSuppressionsSection(config: ReviewConfig): string {
 }
 
 // ---------------------------------------------------------------------------
+// Security checklist (always included, language-agnostic)
+// ---------------------------------------------------------------------------
+
+const SECURITY_CHECKLIST = `## Security Checklist
+Always check for these attack vectors regardless of which review dimensions are enabled:
+- **Injection (critical)**: SQL/NoSQL queries built with string concatenation or template literals containing user input — verify parameterized queries or prepared statements are used
+- **Command injection (critical)**: \`child_process.exec\`, \`subprocess.run(shell=True)\`, \`os.system\`, or similar with any user-controlled input
+- **XSS (critical)**: unsanitized user input rendered via \`innerHTML\`, \`dangerouslySetInnerHTML\`, \`document.write\`, or \`eval\` — verify escaping or sanitization
+- **SSRF (critical)**: HTTP/fetch requests where the URL or host is derived from user input without an allowlist — attacker can reach internal services
+- **Path traversal (critical)**: file-system operations where the path includes user input without \`path.resolve\` + strict prefix validation
+- **Authentication/authorization (critical)**: new routes or endpoints missing auth middleware; privilege escalation patterns; JWTs decoded without verifying the signature
+- **Hardcoded secrets (critical)**: API keys, passwords, tokens, or private keys committed directly in source code
+- **Insecure deserialization (critical)**: \`pickle.loads\`, \`yaml.load\` (not \`yaml.safe_load\`), \`eval()\`, or \`JSON.parse\` on unvalidated data from external sources
+- **Mass assignment (critical)**: object spread (\`{ ...req.body }\`) or \`Object.assign\` with unfiltered user input bound directly to a database model
+- **Sensitive data exposure (critical)**: PII, credentials, or secrets written to logs, returned verbatim in API responses, or stored without encryption`;
+
+// ---------------------------------------------------------------------------
+// Performance checklist (always included)
+// ---------------------------------------------------------------------------
+
+const PERFORMANCE_CHECKLIST = `## Performance Checklist
+Always check for these patterns regardless of which review dimensions are enabled:
+- **N+1 queries (warning)**: database or API calls inside a loop (\`.forEach\`, \`for\`, \`.map\`, \`.each\`) — suggest batching with \`whereIn\`, \`include\`/\`eager_load\`, or \`Promise.all\`
+- **Blocking I/O in async context (warning)**: synchronous file/network operations (\`fs.readFileSync\`, \`execSync\`, \`requests.get\` on a hot path) inside async functions or request handlers
+- **Unbounded queries (warning)**: database queries or external API calls without \`LIMIT\`, pagination, or a result-size cap on collections that could grow large
+- **Sequential awaits that could be parallel (suggestion)**: multiple independent \`await\` calls in sequence inside a loop or handler where \`Promise.all\` would be faster
+- **Event loop blocking (warning)**: CPU-intensive synchronous work (large sort, deep JSON serialization, regex on untrusted input) executed on the main thread in a Node.js/server context`;
+
+// ---------------------------------------------------------------------------
 // Pass 2: Deep review prompt
 // ---------------------------------------------------------------------------
 
@@ -264,6 +293,10 @@ Focus on: ${aspects}
 - **suggestion**: Code improvements, readability, maintainability — nice to have
 - **nitpick**: Style preferences, minor formatting — optional
 
+${SECURITY_CHECKLIST}
+
+${PERFORMANCE_CHECKLIST}
+
 ## Output Format
 Return only a single valid JSON object matching this schema:
 ${REVIEW_JSON_SCHEMA}
@@ -301,8 +334,8 @@ The \`suggestedFix\` field is rendered by GitHub as a one-click "Apply suggestio
 - Prefer 5 high-confidence, actionable findings over 20 speculative ones
 - Do not flag issues that are clearly intentional (TODO comments, disabled lint rules with explanations, performance trade-offs documented in comments)
 - Consider the PR's purpose: if it is a hotfix, style-level suggestions are noise; focus on correctness
-- If a pattern appears consistently across many files in this PR, it is likely intentional — flag it once as a suggestion, not as critical/warning
-- Score: 90–100 = no real bugs/security issues; 70–89 = minor warnings; 50–69 = real issues; <50 = significant bugs
+- If a pattern appears consistently across many files in this PR, it is likely intentional — flag it once as a suggestion, not as critical/warning — **exception: security and bug findings are never de-escalated regardless of how many files they appear in; each instance must be flagged at its true severity**
+- Score: 90–100 = no real bugs/security issues; 70–89 = minor warnings; 50–69 = real issues; <50 = significant bugs; security vulnerabilities anchor the score down — a single critical security issue caps the score at 60
 
 ## False Positive Prevention
 - Read the full file content provided as context before flagging an issue — the code may be correct in context
