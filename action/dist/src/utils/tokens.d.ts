@@ -4,6 +4,18 @@
  */
 export declare function estimateTokens(text: string): number;
 /**
+ * Sum two or more token usage objects into one.
+ */
+export declare function sumTokenUsage(...usages: Array<{
+    input: number;
+    output: number;
+    cached: number;
+}>): {
+    input: number;
+    output: number;
+    cached: number;
+};
+/**
  * Calculate API cost in USD based on token usage.
  */
 export declare function calculateCost(usage: {
