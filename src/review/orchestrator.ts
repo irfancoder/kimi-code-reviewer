@@ -111,6 +111,7 @@ export class ReviewOrchestrator {
           owner,
           repo,
           pullNumber,
+          headSha,
           walkthrough,
           changedFilePaths: prContext.changedFiles.map((f) => f.filename),
         });
