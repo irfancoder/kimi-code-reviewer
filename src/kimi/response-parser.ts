@@ -161,6 +161,7 @@ export function parseAIResponse(
       annotations: [],
       stats: { critical: 0, warning: 0, suggestion: 0, nitpick: 0 },
       tokensUsed: tokenUsage,
+      parseError: true,
     };
   }
 

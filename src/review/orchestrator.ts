@@ -148,8 +148,20 @@ export class ReviewOrchestrator {
         responseFormat: { type: 'json_object' },
       });
 
-      // Step 9: Parse review response
-      const result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
+      // Step 9: Parse review response — retry once if JSON extraction failed entirely
+      let result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
+      if (result.parseError) {
+        logger.warn({ pullNumber }, 'AI response JSON extraction failed, retrying deep review pass');
+        const retryResponse = await this.llm.chatCompletion({
+          messages,
+          responseFormat: { type: 'json_object' },
+        });
+        result = parseAIResponse(retryResponse.content, {
+          input: reviewResponse.usage.input + retryResponse.usage.input,
+          output: reviewResponse.usage.output + retryResponse.usage.output,
+          cached: reviewResponse.usage.cached + retryResponse.usage.cached,
+        });
+      }
 
       // Merge token usage from both passes into the result
       result.tokensUsed = {

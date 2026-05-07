@@ -45,6 +45,8 @@ export interface ReviewResult {
     output: number;
     cached: number;
   };
+  /** True when JSON could not be extracted from the LLM response at all — caller may retry. */
+  parseError?: boolean;
 }
 
 export interface ChangedFile {

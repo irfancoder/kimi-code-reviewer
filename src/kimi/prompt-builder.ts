@@ -321,6 +321,18 @@ function buildSuppressionsSection(config: ReviewConfig): string {
 }
 
 // ---------------------------------------------------------------------------
+// Bug patterns checklist (always included)
+// ---------------------------------------------------------------------------
+
+const BUG_PATTERNS_CHECKLIST = `## Bug Patterns Checklist
+Always check for these regardless of which review dimensions are enabled:
+- **Off-by-one (warning)**: loop bounds using \`<\` vs \`<=\`, array slice indices, pagination \`offset\` calculations, and fence-post errors in range checks — these are the most common source of subtle data truncation and index-out-of-bounds bugs
+- **Race condition / TOCTOU (critical)**: check-then-act patterns where state can change between the check and the action (e.g. \`if (file.exists()) file.read()\`, reading then writing a shared counter without atomicity, or \`getUser()\` then mutating based on the result without re-validating)
+- **Integer overflow in numeric operations (warning)**: arithmetic on values that could be large (IDs, financial amounts, counts) without bounds checking — in JavaScript all numbers are float64 so integers above 2^53 lose precision; use \`BigInt\` for large integer math
+- **ReDoS — catastrophic regex backtracking (warning)**: regular expressions with nested quantifiers (e.g. \`(a+)+\`, \`(.*a){n}\`) applied to user-supplied input — a crafted string can cause exponential backtracking and hang the process; prefer linear-time alternatives or add input length limits
+- **Incorrect comparison operator (warning)**: loose equality (\`==\`) where strict (\`===\`) is needed, assignment (\`=\`) inside a condition, or reversed comparator in a sort callback (\`a - b\` vs \`b - a\`) causing incorrect ordering`;
+
+// ---------------------------------------------------------------------------
 // Security checklist (always included, language-agnostic)
 // ---------------------------------------------------------------------------
 
@@ -416,9 +428,18 @@ Focus on: ${aspects}
 - **suggestion**: Code improvements, readability, maintainability — nice to have
 - **nitpick**: Style preferences, minor formatting — optional
 
+${BUG_PATTERNS_CHECKLIST}
+
 ${SECURITY_CHECKLIST}
 
 ${PERFORMANCE_CHECKLIST}
+
+## Cross-File Analysis
+When multiple changed files are provided, look for issues that only appear when files are read together:
+- A function introduced or modified in one file that is called from a route/handler in another file — check whether input validation happens before the call, not just inside the function
+- Shared module-level mutable state (exported \`let\`, singleton objects, module-level caches) written from one file and read from another without synchronization
+- Auth or permission checks applied in some call sites but not all — if a utility is called from both an authenticated and an unauthenticated context, flag the unguarded path
+- Type mismatches at call boundaries — a function changed to return \`null\` in one file while callers in other files still assume a non-null return
 
 ## Output Format
 Return only a single valid JSON object matching this schema:
@@ -458,7 +479,7 @@ The \`suggestedFix\` field is rendered by GitHub as a one-click "Apply suggestio
 - Do not flag issues that are clearly intentional (TODO comments, disabled lint rules with explanations, performance trade-offs documented in comments)
 - Consider the PR's purpose: if it is a hotfix, style-level suggestions are noise; focus on correctness
 - If a pattern appears consistently across many files in this PR, it is likely intentional — flag it once as a suggestion, not as critical/warning — **exception: security and bug findings are never de-escalated regardless of how many files they appear in; each instance must be flagged at its true severity**
-- Score: 90–100 = no real bugs/security issues; 70–89 = minor warnings; 50–69 = real issues; <50 = significant bugs; security vulnerabilities anchor the score down — a single critical security issue caps the score at 60
+- Score calibration: start at 100 and deduct — **critical finding: −15 each** (security critical: −20 each), **warning: −5 each**, **suggestion: −1 each**, **nitpick: 0**. A single critical security finding caps the score at 60 regardless of other findings. Final score ranges: 90–100 = production-ready with at most minor suggestions; 75–89 = mergeable but has warnings worth fixing; 50–74 = real issues that should be addressed before merge; below 50 = significant bugs or security vulnerabilities present
 
 ## False Positive Prevention
 - Read the full file content provided as context before flagging an issue — the code may be correct in context
