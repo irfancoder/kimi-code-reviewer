@@ -1,3 +1,4 @@
+import { Agent } from "undici";
 import type { ChatMessage } from "../types/review.js";
 import { ConfigError, LLMApiError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
@@ -127,6 +128,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
         : {}),
     };
 
+    const dispatcher = new Agent({
+      headersTimeout: this.timeout,
+      bodyTimeout: this.timeout,
+    });
+
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -140,7 +146,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       },
       body: JSON.stringify(body),
       signal,
-    });
+      dispatcher,
+    } as unknown as RequestInit);
 
     if (!res.ok) {
       const errorBody = await res.text().catch(() => "");
