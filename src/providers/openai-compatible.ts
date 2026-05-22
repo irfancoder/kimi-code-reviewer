@@ -148,6 +148,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         // 'X-Client-Name': 'fiscalcr',
         // NOTE: this is needed for own usage to bypass kimi 403
         "User-Agent": "gsd/2.77.0",
+        "X-Client-Name": "opencode",
       },
       body: JSON.stringify(body),
       signal,
