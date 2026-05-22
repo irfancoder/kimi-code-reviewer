@@ -46,30 +46,35 @@ export async function extractPullRequestContext(
     mediaType: { format: 'diff' },
   }) as unknown as { data: string };
 
-  // Fetch full file contents for context (head version)
+  // Fetch full file contents for context (head version) — parallel with concurrency limit
   const fileContents = new Map<string, string>();
   const maxFileSize = config.files.maxFileSize;
+  const CONCURRENCY = 10;
 
-  for (const file of files) {
-    if (file.status === 'removed') continue;
+  const fetchableFiles = files.filter((f) => f.status !== 'removed');
+  for (let i = 0; i < fetchableFiles.length; i += CONCURRENCY) {
+    const batch = fetchableFiles.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (file) => {
+        try {
+          const { data } = await octokit.repos.getContent({
+            owner,
+            repo,
+            path: file.filename,
+            ref: pr.head.sha,
+          });
 
-    try {
-      const { data } = await octokit.repos.getContent({
-        owner,
-        repo,
-        path: file.filename,
-        ref: pr.head.sha,
-      });
-
-      if ('content' in data && data.encoding === 'base64') {
-        const content = Buffer.from(data.content, 'base64').toString('utf-8');
-        if (content.length <= maxFileSize) {
-          fileContents.set(file.filename, content);
+          if ('content' in data && data.encoding === 'base64') {
+            const content = Buffer.from(data.content, 'base64').toString('utf-8');
+            if (content.length <= maxFileSize) {
+              fileContents.set(file.filename, content);
+            }
+          }
+        } catch (err) {
+          logger.debug({ file: file.filename, err }, 'Could not fetch file content');
         }
-      }
-    } catch (err) {
-      logger.debug({ file: file.filename, err }, 'Could not fetch file content');
-    }
+      }),
+    );
   }
 
   logger.info(

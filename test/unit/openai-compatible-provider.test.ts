@@ -6,7 +6,7 @@ describe('OpenAICompatibleProvider', () => {
     vi.restoreAllMocks();
   });
 
-  it('does not send an explicit max_tokens cap', async () => {
+  it('sends max_tokens cap of 8192', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
@@ -41,7 +41,7 @@ describe('OpenAICompatibleProvider', () => {
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
 
-    expect(body.max_tokens).toBeUndefined();
+    expect(body.max_tokens).toBe(8_192);
   });
 
   it('retries once without structured output when OpenRouter returns an empty completion', async () => {

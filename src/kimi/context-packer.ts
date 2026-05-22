@@ -120,16 +120,41 @@ function packMixed(ctx: PullRequestContext, _config: ReviewConfig): PackResult {
   };
 }
 
-/** Chunked mode: split by files into multiple reviews */
+/** Chunked mode: no file contents, truncate diff to fit within budget */
 function packChunked(ctx: PullRequestContext, _config: ReviewConfig): PackResult {
-  // For chunked mode, just send the diff without file contents
-  // The orchestrator will handle splitting into multiple API calls
   const parts: string[] = [];
   parts.push(`## Pull Request: ${ctx.title}\n`);
   if (ctx.body) parts.push(`### Description\n${ctx.body}\n`);
-  parts.push(`### Diff\n\`\`\`diff\n${ctx.diff}\n\`\`\`\n`);
 
-  const totalTokens = estimateTokens(ctx.diff);
+  // Truncate diff to fit within budget — prioritize files with the most additions
+  const diffBudget = BUDGET;
+  const diffTokens = estimateTokens(ctx.diff);
+
+  let diff = ctx.diff;
+  if (diffTokens > diffBudget) {
+    // Split diff into per-file sections and keep the most important ones
+    const fileDiffs = splitDiffByFile(ctx.diff);
+    // Sort by additions (more changes = more important to review)
+    const sorted = fileDiffs.sort((a, b) => b.lines - a.lines);
+
+    const kept: string[] = [];
+    let usedTokens = 0;
+    for (const fd of sorted) {
+      const tokens = estimateTokens(fd.content);
+      if (usedTokens + tokens > diffBudget) break;
+      kept.push(fd.content);
+      usedTokens += tokens;
+    }
+    diff = kept.join('\n');
+    logger.info(
+      { originalFiles: fileDiffs.length, keptFiles: kept.length, originalTokens: diffTokens, keptTokens: usedTokens },
+      'Chunked mode: truncated diff to fit budget',
+    );
+  }
+
+  parts.push(`### Diff\n\`\`\`diff\n${diff}\n\`\`\`\n`);
+
+  const totalTokens = estimateTokens(diff);
 
   return {
     messages: [{ role: 'user', content: parts.join('\n') }],
@@ -137,5 +162,20 @@ function packChunked(ctx: PullRequestContext, _config: ReviewConfig): PackResult
     includedFiles: [],
     truncatedFiles: ctx.changedFiles.map((f) => f.filename),
     strategy: 'chunked',
+    truncatedDiff: diff,
   };
+}
+
+/** Split a unified diff into per-file sections */
+function splitDiffByFile(diff: string): Array<{ file: string; content: string; lines: number }> {
+  const results: Array<{ file: string; content: string; lines: number }> = [];
+  const sections = diff.split(/(?=^diff --git )/m);
+  for (const section of sections) {
+    if (!section.trim()) continue;
+    const fileMatch = section.match(/^diff --git a\/(.+?) b\//);
+    const file = fileMatch?.[1] ?? 'unknown';
+    const addedLines = (section.match(/^\+[^+]/gm) ?? []).length;
+    results.push({ file, content: section, lines: addedLines });
+  }
+  return results;
 }

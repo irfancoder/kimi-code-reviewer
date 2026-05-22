@@ -48,59 +48,6 @@ export function detectLanguages(changedFiles: ChangedFile[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Pass 1: Walkthrough prompt
-// ---------------------------------------------------------------------------
-
-const WALKTHROUGH_JSON_SCHEMA = `{
-  "prSummary": "string — 2–4 sentences explaining what this PR does and why",
-  "walkthrough": [
-    {
-      "path": "string — file path relative to repo root",
-      "summary": "string — 1–2 sentences describing what logic changed in this file",
-      "changeType": "added | modified | removed | renamed"
-    }
-  ],
-  "detectedLanguages": ["string — programming languages present in the changed files"],
-  "detectedFrameworks": ["string — frameworks/libraries inferred from imports or file names"]
-}`;
-
-export function buildWalkthroughMessages(ctx: PullRequestContext): ChatMessage[] {
-  const system = `You are a senior engineer reading a pull request for the first time.
-Your task is NOT to find bugs — it is to understand what the PR does and summarize it clearly.
-
-## Output Format
-Respond with a single JSON object matching this schema:
-${WALKTHROUGH_JSON_SCHEMA}
-
-## Instructions
-- prSummary: explain the purpose and scope of the PR in plain English (2–4 sentences)
-- walkthrough: one entry per changed file — describe what logic changed, not just "file modified"
-- detectedLanguages: list all programming languages present (e.g. TypeScript, Python, Go)
-- detectedFrameworks: list frameworks/libraries you can infer from imports or file names
-  (e.g. React, Next.js, FastAPI, Django, Express, Gin, Spring)
-- If a file was deleted, describe what was removed and why that makes sense in context
-- If there are more than 30 changed files, include entries for the 20 most significant ones
-- Do NOT flag any issues or mention code quality — this pass is purely descriptive`;
-
-  const fileSummary = ctx.changedFiles
-    .map((f) => `- ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`)
-    .join('\n');
-
-  const user = [
-    `## Pull Request #${ctx.pullNumber}: ${ctx.title}`,
-    ctx.body ? `\n### Description\n${ctx.body}` : '',
-    `\n### Changed Files (${ctx.changedFiles.length} files)\n${fileSummary}`,
-    `\n### Diff\n\`\`\`diff\n${ctx.diff}\n\`\`\``,
-    '\nSummarize this PR.',
-  ].join('\n');
-
-  return [
-    { role: 'system', content: system },
-    { role: 'user', content: user },
-  ];
-}
-
-// ---------------------------------------------------------------------------
 // Language-specific rules
 // ---------------------------------------------------------------------------
 
@@ -239,7 +186,7 @@ const FRAMEWORK_RULES: Array<{ match: RegExp; rule: string }> = [
 - **Missing error boundary (suggestion)**: query errors that are not caught by an \`<ErrorBoundary>\` or an \`onError\` handler will bubble as unhandled rejections — wrap data-fetching trees with error boundaries`,
   },
   {
-    match: /gin|echo|fiber/i,
+    match: /\bgin\b|\becho\b|\bfiber\b/i,
     rule: `### Go HTTP Framework (Gin / Echo / Fiber)
 - **Binding without validation (critical)**: \`c.ShouldBind\` / \`c.Bind\` without subsequent struct validation (\`validate.Struct\`) accepts any shape of input — always validate after binding
 - **Missing auth middleware on route groups (critical)**: route groups that expose sensitive endpoints must have auth middleware applied at the group level, not just per-route
@@ -293,11 +240,40 @@ const FRAMEWORK_RULES: Array<{ match: RegExp; rule: string }> = [
   },
 ];
 
+/**
+ * Detect frameworks by scanning file contents for import/require patterns
+ * that match the FRAMEWORK_RULES regexes. This replaces the LLM-based detection
+ * from the walkthrough pass.
+ */
+export function detectFrameworks(fileContents: Map<string, string>): string[] {
+  const allContent = [...fileContents.values()].join('\n');
+  // Extract import/require lines to narrow the search
+  const importLines = allContent
+    .split('\n')
+    .filter((line) => /^\s*(import\s|from\s|require\s*\(|using\s|use\s)/.test(line))
+    .join('\n');
+  // Also include the full content for file-name-based detection (e.g., next.config.js patterns)
+  const searchText = importLines + '\n' + [...fileContents.keys()].join('\n');
+
+  const frameworks: string[] = [];
+  for (const fr of FRAMEWORK_RULES) {
+    if (fr.match.test(searchText)) {
+      // Extract a readable framework name from the rule header
+      const nameMatch = fr.rule.match(/^### (.+)/);
+      if (nameMatch) frameworks.push(nameMatch[1].split(/\s*[(/]/)[0].trim());
+    }
+  }
+  return [...new Set(frameworks)];
+}
+
 function buildFrameworkRulesSection(frameworks: string[]): string {
   if (frameworks.length === 0) return '';
-  const matched = FRAMEWORK_RULES.filter((fr) =>
-    frameworks.some((f) => fr.match.test(f)),
-  ).map((fr) => fr.rule);
+  const matched = FRAMEWORK_RULES.filter((fr) => {
+    const nameMatch = fr.rule.match(/^### (.+)/);
+    if (!nameMatch) return false;
+    const header = nameMatch[1].split(/\s*[(/]/)[0].trim();
+    return frameworks.includes(header);
+  }).map((fr) => fr.rule);
   if (matched.length === 0) return '';
   return `## Framework-Specific Rules\n${matched.join('\n\n')}`;
 }
@@ -366,6 +342,14 @@ Always check for these patterns regardless of which review dimensions are enable
 // ---------------------------------------------------------------------------
 
 const REVIEW_JSON_SCHEMA = `{
+  "prSummary": "string — 2–4 sentences explaining what this PR does and why",
+  "walkthrough": [
+    {
+      "path": "string — file path relative to repo root",
+      "summary": "string — 1–2 sentences describing what logic changed in this file",
+      "changeType": "added | modified | removed | renamed"
+    }
+  ],
   "summary": "string — overall review summary in markdown (2–5 sentences)",
   "score": "number 0-100 — code quality score",
   "annotations": [
@@ -385,7 +369,8 @@ const REVIEW_JSON_SCHEMA = `{
 export function buildDeepReviewMessages(
   ctx: PullRequestContext,
   config: ReviewConfig,
-  walkthrough: WalkthroughResult,
+  detectedLanguages: string[],
+  detectedFrameworks: string[],
   fileContents?: Map<string, string>,
 ): ChatMessage[] {
   const aspects = Object.entries(config.review.aspects)
@@ -397,27 +382,26 @@ export function buildDeepReviewMessages(
     .map((r) => `- [${r.severity}] ${r.name}: ${r.description}`)
     .join('\n');
 
-  const langRules = buildLanguageRulesSection(walkthrough.detectedLanguages);
-  const frameworkRules = buildFrameworkRulesSection(walkthrough.detectedFrameworks);
+  const langRules = buildLanguageRulesSection(detectedLanguages);
+  const frameworkRules = buildFrameworkRulesSection(detectedFrameworks);
   const suppressions = buildSuppressionsSection(config);
 
-  const walkthroughCtx = [
-    walkthrough.prSummary ? `**PR Purpose:** ${walkthrough.prSummary}` : '',
-    walkthrough.detectedLanguages.length > 0
-      ? `**Languages:** ${walkthrough.detectedLanguages.join(', ')}`
+  const contextLines = [
+    detectedLanguages.length > 0
+      ? `**Languages:** ${detectedLanguages.join(', ')}`
       : '',
-    walkthrough.detectedFrameworks.length > 0
-      ? `**Frameworks:** ${walkthrough.detectedFrameworks.join(', ')}`
+    detectedFrameworks.length > 0
+      ? `**Frameworks:** ${detectedFrameworks.join(', ')}`
       : '',
   ]
     .filter(Boolean)
     .join('\n');
 
   const system = `You are an expert code reviewer performing a thorough review of a pull request.
-You already understand the PR's intent from a prior analysis. Your job is to find real bugs, security vulnerabilities, and meaningful improvements — while avoiding noise.
+Your job is to understand the PR, summarize it, and find real bugs, security vulnerabilities, and meaningful improvements — while avoiding noise.
 
 ## PR Context
-${walkthroughCtx || 'No walkthrough context available.'}
+${contextLines || 'No additional context.'}
 
 ## Review Dimensions
 Focus on: ${aspects}
@@ -444,6 +428,12 @@ When multiple changed files are provided, look for issues that only appear when 
 ## Output Format
 Return only a single valid JSON object matching this schema:
 ${REVIEW_JSON_SCHEMA}
+
+## Walkthrough Instructions
+- **prSummary**: explain the purpose and scope of the PR in plain English (2–4 sentences)
+- **walkthrough**: one entry per changed file — describe what logic changed, not just "file modified"
+- If a file was deleted, describe what was removed and why that makes sense in context
+- If there are more than 30 changed files, include entries for the 20 most significant ones
 
 ## Core Rules
 - **Only annotate lines present in the diff** — lines beginning with \`+\` (added/modified). Never annotate deleted lines (\`-\`) or context lines.

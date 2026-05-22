@@ -3,8 +3,8 @@ import type { ReviewConfig } from '../config/schema.js';
 import type { ReviewAnnotation, ReviewResult, Severity, WalkthroughResult } from '../types/review.js';
 import type { LLMProvider } from '../providers/interface.js';
 import { packContext } from '../kimi/context-packer.js';
-import { detectLanguages, buildWalkthroughMessages, buildDeepReviewMessages } from '../kimi/prompt-builder.js';
-import { parseAIResponse, parseWalkthroughResponse } from '../kimi/response-parser.js';
+import { detectLanguages, detectFrameworks, buildDeepReviewMessages } from '../kimi/prompt-builder.js';
+import { parseAIResponse } from '../kimi/response-parser.js';
 import { extractPullRequestContext } from '../github/pulls.js';
 import { createCheckRun, completeCheckRun } from '../github/checks.js';
 import { createPRReview, createWalkthroughComment } from '../github/comments.js';
@@ -65,96 +65,45 @@ export class ReviewOrchestrator {
         return result;
       }
 
-      // Step 4: Detect languages from file extensions (pure, no API call)
-      const extensionLanguages = detectLanguages(prContext.changedFiles);
-      logger.info({ extensionLanguages }, 'Languages detected from extensions');
+      // Step 4: Detect languages and frameworks locally (no LLM call)
+      const detectedLanguages = detectLanguages(prContext.changedFiles);
+      const detectedFrameworks = detectFrameworks(prContext.fileContents);
+      logger.info({ detectedLanguages, detectedFrameworks }, 'Languages and frameworks detected locally');
 
-      // Step 5: Pass 1 — Walkthrough (understand PR intent, detect frameworks)
-      // Can be disabled via config.walkthrough.enabled = false to save cost/latency.
-      let walkthrough: WalkthroughResult;
-
-      if (this.config.walkthrough.enabled) {
-        logger.info({ pullNumber }, 'Running walkthrough pass (Pass 1)');
-        try {
-          const walkthroughMessages = buildWalkthroughMessages(prContext);
-          const walkthroughResponse = await this.llm.chatCompletion({
-            messages: walkthroughMessages,
-            responseFormat: { type: 'json_object' },
-          });
-          walkthrough = parseWalkthroughResponse(
-            walkthroughResponse.content,
-            walkthroughResponse.usage,
-          );
-          // Supplement with extension-based detection for any language the model missed
-          for (const lang of extensionLanguages) {
-            if (!walkthrough.detectedLanguages.includes(lang)) {
-              walkthrough.detectedLanguages.push(lang);
-            }
-          }
-          logger.info(
-            { detectedLanguages: walkthrough.detectedLanguages, detectedFrameworks: walkthrough.detectedFrameworks },
-            'Walkthrough pass complete',
-          );
-        } catch (err) {
-          logger.warn({ err }, 'Walkthrough pass failed, falling back to extension-based detection');
-          walkthrough = {
-            prSummary: '',
-            walkthrough: [],
-            detectedLanguages: extensionLanguages,
-            detectedFrameworks: [],
-            tokensUsed: { input: 0, output: 0, cached: 0 },
-          };
-        }
-
-        // Step 6: Post/update walkthrough comment (non-blocking)
-        await createWalkthroughComment(this.octokit, {
-          owner,
-          repo,
-          pullNumber,
-          headSha,
-          walkthrough,
-          changedFilePaths: prContext.changedFiles.map((f) => f.filename),
-        });
-      } else {
-        logger.info({ pullNumber }, 'Walkthrough pass disabled, using extension-based detection');
-        walkthrough = {
-          prSummary: '',
-          walkthrough: [],
-          detectedLanguages: extensionLanguages,
-          detectedFrameworks: [],
-          tokensUsed: { input: 0, output: 0, cached: 0 },
-        };
-      }
-
-      // Step 7: Pack context — determines which file contents to include within 256K budget
+      // Step 5: Pack context — determines which file contents to include within 256K budget
       const packed = packContext(prContext, this.config);
       logger.info(
         { strategy: packed.strategy, totalTokens: packed.totalTokens, includedFiles: packed.includedFiles.length },
-        'Context packed for Pass 2',
+        'Context packed for review',
       );
 
       // Build a filtered fileContents map containing only the files selected by packContext.
-      // For large PRs (mixed/chunked strategy) this prevents blowing the token budget.
       const packedFileContents = new Map<string, string>();
       for (const path of packed.includedFiles) {
         const content = prContext.fileContents.get(path);
         if (content) packedFileContents.set(path, content);
       }
 
-      // Step 8: Pass 2 — Deep review using walkthrough context + budget-respecting file contents
-      logger.info({ pullNumber }, 'Running deep review pass (Pass 2)');
-      const messages = buildDeepReviewMessages(prContext, this.config, walkthrough, packedFileContents);
+      // Step 6: Single-pass review — walkthrough + deep review in one LLM call
+      logger.info({ pullNumber }, 'Running single-pass review');
+      // In chunked mode, use the budget-truncated diff instead of the full one
+      const reviewContext = packed.truncatedDiff
+        ? { ...prContext, diff: packed.truncatedDiff }
+        : prContext;
+      const messages = buildDeepReviewMessages(
+        reviewContext, this.config, detectedLanguages, detectedFrameworks, packedFileContents,
+      );
 
       const reviewResponse = await this.llm.chatCompletion({
         messages,
         responseFormat: { type: 'json_object' },
       });
 
-      // Step 9: Parse review response — retry once if JSON extraction failed entirely
+      // Step 7: Parse review response — retry once if JSON extraction failed entirely
       let result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
       let reviewUsage = reviewResponse.usage;
       if (result.parseError) {
-        logger.warn({ pullNumber }, 'AI response JSON extraction failed, retrying deep review pass');
+        logger.warn({ pullNumber }, 'AI response JSON extraction failed, retrying');
         const retryResponse = await this.llm.chatCompletion({
           messages,
           responseFormat: { type: 'json_object' },
@@ -163,20 +112,42 @@ export class ReviewOrchestrator {
         result = parseAIResponse(retryResponse.content, reviewUsage);
       }
 
-      // Merge token usage from both passes into the result
-      result.tokensUsed = sumTokenUsage(walkthrough.tokensUsed, reviewUsage);
+      result.tokensUsed = reviewUsage;
 
-      // Step 10: Filter by minimum severity
+      // Step 8: Post walkthrough comment from the review result (non-blocking)
+      if (this.config.walkthrough.enabled && (result.prSummary || result.walkthrough?.length)) {
+        try {
+          const walkthrough: WalkthroughResult = {
+            prSummary: result.prSummary ?? '',
+            walkthrough: result.walkthrough ?? [],
+            detectedLanguages,
+            detectedFrameworks,
+            tokensUsed: { input: 0, output: 0, cached: 0 },
+          };
+          await createWalkthroughComment(this.octokit, {
+            owner,
+            repo,
+            pullNumber,
+            headSha,
+            walkthrough,
+            changedFilePaths: prContext.changedFiles.map((f) => f.filename),
+          });
+        } catch (err) {
+          logger.warn({ err }, 'Failed to post walkthrough comment, continuing');
+        }
+      }
+
+      // Step 9: Filter by minimum severity
       const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
       const minIdx = minSeverityOrder.indexOf(this.config.review.minSeverity);
       result.annotations = result.annotations.filter(
         (a: ReviewAnnotation) => minSeverityOrder.indexOf(a.severity) <= minIdx,
       );
 
-      // Step 11: Apply config-based suppressions
+      // Step 10: Apply config-based suppressions
       result.annotations = applySuppressions(result.annotations, this.config.suppressions);
 
-      // Step 12: Smart sort + truncate to maxAnnotations
+      // Step 11: Smart sort + truncate to maxAnnotations
       result.annotations = sortAndTruncateAnnotations(
         result.annotations,
         this.config.review.maxAnnotations,
@@ -187,7 +158,7 @@ export class ReviewOrchestrator {
       for (const a of result.annotations) stats[a.severity]++;
       result.stats = stats;
 
-      // Step 13: Determine conclusion
+      // Step 12: Determine conclusion
       const conclusion =
         this.config.review.failOn === 'critical' && result.stats.critical > 0
           ? 'failure'
@@ -196,14 +167,14 @@ export class ReviewOrchestrator {
             ? 'failure'
             : 'success';
 
-      // Step 14: Update Check Run
+      // Step 13: Update Check Run
       const summaryMd = buildSummary(result);
       await completeCheckRun(this.octokit, {
         owner, repo, checkRunId, conclusion,
         summary: summaryMd, annotations: result.annotations,
       });
 
-      // Step 15: Create PR Review (inline comments)
+      // Step 14: Create PR Review (inline comments)
       await createPRReview(this.octokit, {
         owner,
         repo,
@@ -223,7 +194,7 @@ export class ReviewOrchestrator {
           annotations: result.annotations.length,
           conclusion,
           contextStrategy: packed.strategy,
-          detectedLanguages: walkthrough.detectedLanguages,
+          detectedLanguages,
         },
         'Review completed',
       );

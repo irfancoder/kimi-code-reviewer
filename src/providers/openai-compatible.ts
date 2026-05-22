@@ -40,6 +40,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly temperature: number;
   private readonly timeout: number;
   private readonly isOpenRouter: boolean;
+  private readonly maxRetries: number;
 
   constructor(config: OpenAICompatibleProviderConfig) {
     this.apiKey = config.apiKey;
@@ -53,13 +54,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.temperature = config.temperature ?? 0.2;
     this.timeout = config.timeout ?? 600_000;
     this.isOpenRouter = this.baseUrl.toLowerCase().includes("openrouter.ai");
+    this.maxRetries = 2;
   }
 
   async chatCompletion(params: {
     messages: ChatMessage[];
     responseFormat?: { type: "json_object" | "text" };
   }): Promise<LLMCompletionResponse> {
-    const response = await this.withTimeout((signal) =>
+    const response = await this.withRetry((signal) =>
       this.performCompletionRequest(
         params.messages,
         params.responseFormat,
@@ -77,7 +79,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         "OpenRouter returned empty structured output, retrying without response_format",
       );
 
-      const retryResponse = await this.withTimeout((signal) =>
+      const retryResponse = await this.withRetry((signal) =>
         this.performCompletionRequest(params.messages, undefined, signal),
       );
 
@@ -97,6 +99,42 @@ export class OpenAICompatibleProvider implements LLMProvider {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  private isRetryableError(err: unknown): boolean {
+    if (err instanceof LLMApiError) {
+      const status = err.statusCode;
+      return status === 429 || (status >= 500 && status <= 504);
+    }
+    // Retry on network errors (but not AbortError — that's our own timeout)
+    if (err instanceof Error) {
+      return err.name === 'TypeError' || err.message.includes('fetch failed');
+    }
+    return false;
+  }
+
+  private async withRetry<T>(
+    fn: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        return await this.withTimeout(fn);
+      } catch (err) {
+        lastError = err;
+        if (attempt < this.maxRetries && this.isRetryableError(err)) {
+          const delay = 2_000 * Math.pow(2, attempt); // 2s, 4s
+          logger.warn(
+            { attempt: attempt + 1, maxRetries: this.maxRetries, delay, err: err instanceof Error ? err.message : String(err) },
+            'LLM API call failed, retrying',
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          throw err;
+        }
+      }
+    }
+    throw lastError;
   }
 
   private extractTextContent(
@@ -128,6 +166,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       model: this.model,
       messages,
       temperature: this.temperature,
+      max_tokens: 8_192,
       ...(responseFormat && { response_format: responseFormat }),
       ...(isOpenRouter && responseFormat
         ? { plugins: [{ id: "response-healing" }] }

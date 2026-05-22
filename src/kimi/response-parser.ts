@@ -42,7 +42,15 @@ const annotationSchema = z
     };
   });
 
+const walkthroughFileSchema = z.object({
+  path: z.string(),
+  summary: z.string(),
+  changeType: z.enum(['added', 'modified', 'removed', 'renamed']).catch('modified'),
+});
+
 const reviewResponseSchema = z.object({
+  prSummary: z.string().default(''),
+  walkthrough: z.array(walkthroughFileSchema).default([]),
   summary: z.string(),
   score: z.number().min(0).max(100),
   annotations: z.array(annotationSchema).default([]),
@@ -182,6 +190,8 @@ export function parseAIResponse(
       annotations: data.annotations,
       stats,
       tokensUsed: tokenUsage,
+      prSummary: data.prSummary,
+      walkthrough: data.walkthrough,
     };
   }
 
@@ -207,62 +217,16 @@ export function parseAIResponse(
     stats[a.severity]++;
   }
 
-  return { summary, score, annotations, stats, tokensUsed: tokenUsage };
-}
-
-// ---------------------------------------------------------------------------
-// Walkthrough response parser
-// ---------------------------------------------------------------------------
-
-const walkthroughFileSchema = z.object({
-  path: z.string(),
-  summary: z.string(),
-  changeType: z.enum(['added', 'modified', 'removed', 'renamed']).catch('modified'),
-});
-
-const walkthroughResponseSchema = z.object({
-  prSummary: z.string().default(''),
-  walkthrough: z.array(walkthroughFileSchema).default([]),
-  detectedLanguages: z.array(z.string()).default([]),
-  detectedFrameworks: z.array(z.string()).default([]),
-});
-
-export function parseWalkthroughResponse(
-  raw: string,
-  tokenUsage: { input: number; output: number; cached: number },
-): WalkthroughResult {
-  logger.info({ rawLength: raw.length }, 'Parsing walkthrough response');
-
-  const parsed = extractJson(raw);
-
-  if (!parsed || typeof parsed !== 'object') {
-    logger.warn('Could not extract JSON from walkthrough response, using empty result');
-    return {
-      prSummary: '',
-      walkthrough: [],
-      detectedLanguages: [],
-      detectedFrameworks: [],
-      tokensUsed: tokenUsage,
-    };
+  // Salvage walkthrough fields
+  const prSummary = typeof partial.prSummary === 'string' ? partial.prSummary : '';
+  let walkthrough: ReviewResult['walkthrough'] = [];
+  if (Array.isArray(partial.walkthrough)) {
+    for (const item of partial.walkthrough) {
+      const parsed = walkthroughFileSchema.safeParse(item);
+      if (parsed.success) walkthrough.push(parsed.data);
+    }
   }
 
-  const result = walkthroughResponseSchema.safeParse(parsed);
-  if (result.success) {
-    return { ...result.data, tokensUsed: tokenUsage };
-  }
-
-  // Graceful degradation — salvage whatever fields are valid
-  logger.warn({ errors: result.error.issues }, 'Walkthrough response partial parse');
-  const partial = parsed as Record<string, unknown>;
-  return {
-    prSummary: typeof partial.prSummary === 'string' ? partial.prSummary : '',
-    walkthrough: [],
-    detectedLanguages: Array.isArray(partial.detectedLanguages)
-      ? (partial.detectedLanguages as string[]).filter((x) => typeof x === 'string')
-      : [],
-    detectedFrameworks: Array.isArray(partial.detectedFrameworks)
-      ? (partial.detectedFrameworks as string[]).filter((x) => typeof x === 'string')
-      : [],
-    tokensUsed: tokenUsage,
-  };
+  return { summary, score, annotations, stats, tokensUsed: tokenUsage, prSummary, walkthrough };
 }
+
