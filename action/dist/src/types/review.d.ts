@@ -36,6 +36,9 @@ export interface ReviewResult {
         output: number;
         cached: number;
     };
+    /** Walkthrough fields extracted from the combined single-pass response. */
+    prSummary?: string;
+    walkthrough?: WalkthroughFile[];
     /** True when JSON could not be extracted from the LLM response at all — caller may retry. */
     parseError?: boolean;
 }
@@ -68,5 +71,7 @@ export interface PackResult {
     includedFiles: string[];
     truncatedFiles: string[];
     strategy: 'full' | 'mixed' | 'chunked';
+    /** When strategy is 'chunked', contains the budget-truncated diff. */
+    truncatedDiff?: string;
 }
 //# sourceMappingURL=review.d.ts.map

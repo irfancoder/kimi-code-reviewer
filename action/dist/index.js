@@ -69418,23 +69418,57 @@ function packMixed(ctx, _config) {
         strategy: 'mixed',
     };
 }
-/** Chunked mode: split by files into multiple reviews */
+/** Chunked mode: no file contents, truncate diff to fit within budget */
 function packChunked(ctx, _config) {
-    // For chunked mode, just send the diff without file contents
-    // The orchestrator will handle splitting into multiple API calls
     const parts = [];
     parts.push(`## Pull Request: ${ctx.title}\n`);
     if (ctx.body)
         parts.push(`### Description\n${ctx.body}\n`);
-    parts.push(`### Diff\n\`\`\`diff\n${ctx.diff}\n\`\`\`\n`);
-    const totalTokens = estimateTokens(ctx.diff);
+    // Truncate diff to fit within budget — prioritize files with the most additions
+    const diffBudget = BUDGET;
+    const diffTokens = estimateTokens(ctx.diff);
+    let diff = ctx.diff;
+    if (diffTokens > diffBudget) {
+        // Split diff into per-file sections and keep the most important ones
+        const fileDiffs = splitDiffByFile(ctx.diff);
+        // Sort by additions (more changes = more important to review)
+        const sorted = fileDiffs.sort((a, b) => b.lines - a.lines);
+        const kept = [];
+        let usedTokens = 0;
+        for (const fd of sorted) {
+            const tokens = estimateTokens(fd.content);
+            if (usedTokens + tokens > diffBudget)
+                break;
+            kept.push(fd.content);
+            usedTokens += tokens;
+        }
+        diff = kept.join('\n');
+        logger.info({ originalFiles: fileDiffs.length, keptFiles: kept.length, originalTokens: diffTokens, keptTokens: usedTokens }, 'Chunked mode: truncated diff to fit budget');
+    }
+    parts.push(`### Diff\n\`\`\`diff\n${diff}\n\`\`\`\n`);
+    const totalTokens = estimateTokens(diff);
     return {
         messages: [{ role: 'user', content: parts.join('\n') }],
         totalTokens,
         includedFiles: [],
         truncatedFiles: ctx.changedFiles.map((f) => f.filename),
         strategy: 'chunked',
+        truncatedDiff: diff,
     };
+}
+/** Split a unified diff into per-file sections */
+function splitDiffByFile(diff) {
+    const results = [];
+    const sections = diff.split(/(?=^diff --git )/m);
+    for (const section of sections) {
+        if (!section.trim())
+            continue;
+        const fileMatch = section.match(/^diff --git a\/(.+?) b\//);
+        const file = fileMatch?.[1] ?? 'unknown';
+        const addedLines = (section.match(/^\+[^+]/gm) ?? []).length;
+        results.push({ file, content: section, lines: addedLines });
+    }
+    return results;
 }
 
 ;// CONCATENATED MODULE: ./src/kimi/cache-strategy.ts
@@ -69553,53 +69587,6 @@ function detectLanguages(changedFiles) {
             langs.add(lang);
     }
     return [...langs];
-}
-// ---------------------------------------------------------------------------
-// Pass 1: Walkthrough prompt
-// ---------------------------------------------------------------------------
-const WALKTHROUGH_JSON_SCHEMA = `{
-  "prSummary": "string — 2–4 sentences explaining what this PR does and why",
-  "walkthrough": [
-    {
-      "path": "string — file path relative to repo root",
-      "summary": "string — 1–2 sentences describing what logic changed in this file",
-      "changeType": "added | modified | removed | renamed"
-    }
-  ],
-  "detectedLanguages": ["string — programming languages present in the changed files"],
-  "detectedFrameworks": ["string — frameworks/libraries inferred from imports or file names"]
-}`;
-function buildWalkthroughMessages(ctx) {
-    const system = `You are a senior engineer reading a pull request for the first time.
-Your task is NOT to find bugs — it is to understand what the PR does and summarize it clearly.
-
-## Output Format
-Respond with a single JSON object matching this schema:
-${WALKTHROUGH_JSON_SCHEMA}
-
-## Instructions
-- prSummary: explain the purpose and scope of the PR in plain English (2–4 sentences)
-- walkthrough: one entry per changed file — describe what logic changed, not just "file modified"
-- detectedLanguages: list all programming languages present (e.g. TypeScript, Python, Go)
-- detectedFrameworks: list frameworks/libraries you can infer from imports or file names
-  (e.g. React, Next.js, FastAPI, Django, Express, Gin, Spring)
-- If a file was deleted, describe what was removed and why that makes sense in context
-- If there are more than 30 changed files, include entries for the 20 most significant ones
-- Do NOT flag any issues or mention code quality — this pass is purely descriptive`;
-    const fileSummary = ctx.changedFiles
-        .map((f) => `- ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`)
-        .join('\n');
-    const user = [
-        `## Pull Request #${ctx.pullNumber}: ${ctx.title}`,
-        ctx.body ? `\n### Description\n${ctx.body}` : '',
-        `\n### Changed Files (${ctx.changedFiles.length} files)\n${fileSummary}`,
-        `\n### Diff\n\`\`\`diff\n${ctx.diff}\n\`\`\``,
-        '\nSummarize this PR.',
-    ].join('\n');
-    return [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-    ];
 }
 // ---------------------------------------------------------------------------
 // Language-specific rules
@@ -69726,7 +69713,7 @@ const FRAMEWORK_RULES = [
 - **Missing error boundary (suggestion)**: query errors that are not caught by an \`<ErrorBoundary>\` or an \`onError\` handler will bubble as unhandled rejections — wrap data-fetching trees with error boundaries`,
     },
     {
-        match: /gin|echo|fiber/i,
+        match: /\bgin\b|\becho\b|\bfiber\b/i,
         rule: `### Go HTTP Framework (Gin / Echo / Fiber)
 - **Binding without validation (critical)**: \`c.ShouldBind\` / \`c.Bind\` without subsequent struct validation (\`validate.Struct\`) accepts any shape of input — always validate after binding
 - **Missing auth middleware on route groups (critical)**: route groups that expose sensitive endpoints must have auth middleware applied at the group level, not just per-route
@@ -69779,10 +69766,41 @@ const FRAMEWORK_RULES = [
 - **Overly permissive schema (warning)**: \`v.any()\`, \`v.unknown()\`, or \`v.record(v.string(), v.any())\` at the top level of a request schema defeats the purpose of validation — tighten to the specific shape expected`,
     },
 ];
+/**
+ * Detect frameworks by scanning file contents for import/require patterns
+ * that match the FRAMEWORK_RULES regexes. This replaces the LLM-based detection
+ * from the walkthrough pass.
+ */
+function detectFrameworks(fileContents) {
+    const allContent = [...fileContents.values()].join('\n');
+    // Extract import/require lines to narrow the search
+    const importLines = allContent
+        .split('\n')
+        .filter((line) => /^\s*(import\s|from\s|require\s*\(|using\s|use\s)/.test(line))
+        .join('\n');
+    // Also include the full content for file-name-based detection (e.g., next.config.js patterns)
+    const searchText = importLines + '\n' + [...fileContents.keys()].join('\n');
+    const frameworks = [];
+    for (const fr of FRAMEWORK_RULES) {
+        if (fr.match.test(searchText)) {
+            // Extract a readable framework name from the rule header
+            const nameMatch = fr.rule.match(/^### (.+)/);
+            if (nameMatch)
+                frameworks.push(nameMatch[1].split(/\s*[(/]/)[0].trim());
+        }
+    }
+    return [...new Set(frameworks)];
+}
 function buildFrameworkRulesSection(frameworks) {
     if (frameworks.length === 0)
         return '';
-    const matched = FRAMEWORK_RULES.filter((fr) => frameworks.some((f) => fr.match.test(f))).map((fr) => fr.rule);
+    const matched = FRAMEWORK_RULES.filter((fr) => {
+        const nameMatch = fr.rule.match(/^### (.+)/);
+        if (!nameMatch)
+            return false;
+        const header = nameMatch[1].split(/\s*[(/]/)[0].trim();
+        return frameworks.includes(header);
+    }).map((fr) => fr.rule);
     if (matched.length === 0)
         return '';
     return `## Framework-Specific Rules\n${matched.join('\n\n')}`;
@@ -69844,6 +69862,14 @@ Always check for these patterns regardless of which review dimensions are enable
 // Pass 2: Deep review prompt
 // ---------------------------------------------------------------------------
 const REVIEW_JSON_SCHEMA = `{
+  "prSummary": "string — 2–4 sentences explaining what this PR does and why",
+  "walkthrough": [
+    {
+      "path": "string — file path relative to repo root",
+      "summary": "string — 1–2 sentences describing what logic changed in this file",
+      "changeType": "added | modified | removed | renamed"
+    }
+  ],
   "summary": "string — overall review summary in markdown (2–5 sentences)",
   "score": "number 0-100 — code quality score",
   "annotations": [
@@ -69859,7 +69885,7 @@ const REVIEW_JSON_SCHEMA = `{
     }
   ]
 }`;
-function buildDeepReviewMessages(ctx, config, walkthrough, fileContents) {
+function buildDeepReviewMessages(ctx, config, detectedLanguages, detectedFrameworks, fileContents) {
     const aspects = Object.entries(config.review.aspects)
         .filter(([, enabled]) => enabled)
         .map(([name]) => name)
@@ -69867,25 +69893,24 @@ function buildDeepReviewMessages(ctx, config, walkthrough, fileContents) {
     const customRules = config.rules
         .map((r) => `- [${r.severity}] ${r.name}: ${r.description}`)
         .join('\n');
-    const langRules = buildLanguageRulesSection(walkthrough.detectedLanguages);
-    const frameworkRules = buildFrameworkRulesSection(walkthrough.detectedFrameworks);
+    const langRules = buildLanguageRulesSection(detectedLanguages);
+    const frameworkRules = buildFrameworkRulesSection(detectedFrameworks);
     const suppressions = buildSuppressionsSection(config);
-    const walkthroughCtx = [
-        walkthrough.prSummary ? `**PR Purpose:** ${walkthrough.prSummary}` : '',
-        walkthrough.detectedLanguages.length > 0
-            ? `**Languages:** ${walkthrough.detectedLanguages.join(', ')}`
+    const contextLines = [
+        detectedLanguages.length > 0
+            ? `**Languages:** ${detectedLanguages.join(', ')}`
             : '',
-        walkthrough.detectedFrameworks.length > 0
-            ? `**Frameworks:** ${walkthrough.detectedFrameworks.join(', ')}`
+        detectedFrameworks.length > 0
+            ? `**Frameworks:** ${detectedFrameworks.join(', ')}`
             : '',
     ]
         .filter(Boolean)
         .join('\n');
     const system = `You are an expert code reviewer performing a thorough review of a pull request.
-You already understand the PR's intent from a prior analysis. Your job is to find real bugs, security vulnerabilities, and meaningful improvements — while avoiding noise.
+Your job is to understand the PR, summarize it, and find real bugs, security vulnerabilities, and meaningful improvements — while avoiding noise.
 
 ## PR Context
-${walkthroughCtx || 'No walkthrough context available.'}
+${contextLines || 'No additional context.'}
 
 ## Review Dimensions
 Focus on: ${aspects}
@@ -69912,6 +69937,12 @@ When multiple changed files are provided, look for issues that only appear when 
 ## Output Format
 Return only a single valid JSON object matching this schema:
 ${REVIEW_JSON_SCHEMA}
+
+## Walkthrough Instructions
+- **prSummary**: explain the purpose and scope of the PR in plain English (2–4 sentences)
+- **walkthrough**: one entry per changed file — describe what logic changed, not just "file modified"
+- If a file was deleted, describe what was removed and why that makes sense in context
+- If there are more than 30 changed files, include entries for the 20 most significant ones
 
 ## Core Rules
 - **Only annotate lines present in the diff** — lines beginning with \`+\` (added/modified). Never annotate deleted lines (\`-\`) or context lines.
@@ -74205,7 +74236,14 @@ const annotationSchema = objectType({
         suggestedFix: suggestedFix ?? undefined,
     };
 });
+const walkthroughFileSchema = objectType({
+    path: stringType(),
+    summary: stringType(),
+    changeType: enumType(['added', 'modified', 'removed', 'renamed']).catch('modified'),
+});
 const reviewResponseSchema = objectType({
+    prSummary: stringType().default(''),
+    walkthrough: arrayType(walkthroughFileSchema).default([]),
     summary: stringType(),
     score: numberType().min(0).max(100),
     annotations: arrayType(annotationSchema).default([]),
@@ -74331,6 +74369,8 @@ function parseAIResponse(raw, tokenUsage) {
             annotations: data.annotations,
             stats,
             tokensUsed: tokenUsage,
+            prSummary: data.prSummary,
+            walkthrough: data.walkthrough,
         };
     }
     // Schema validation failed — salvage what we can
@@ -74352,53 +74392,17 @@ function parseAIResponse(raw, tokenUsage) {
     for (const a of annotations) {
         stats[a.severity]++;
     }
-    return { summary, score, annotations, stats, tokensUsed: tokenUsage };
-}
-// ---------------------------------------------------------------------------
-// Walkthrough response parser
-// ---------------------------------------------------------------------------
-const walkthroughFileSchema = objectType({
-    path: stringType(),
-    summary: stringType(),
-    changeType: enumType(['added', 'modified', 'removed', 'renamed']).catch('modified'),
-});
-const walkthroughResponseSchema = objectType({
-    prSummary: stringType().default(''),
-    walkthrough: arrayType(walkthroughFileSchema).default([]),
-    detectedLanguages: arrayType(stringType()).default([]),
-    detectedFrameworks: arrayType(stringType()).default([]),
-});
-function parseWalkthroughResponse(raw, tokenUsage) {
-    logger.info({ rawLength: raw.length }, 'Parsing walkthrough response');
-    const parsed = extractJson(raw);
-    if (!parsed || typeof parsed !== 'object') {
-        logger.warn('Could not extract JSON from walkthrough response, using empty result');
-        return {
-            prSummary: '',
-            walkthrough: [],
-            detectedLanguages: [],
-            detectedFrameworks: [],
-            tokensUsed: tokenUsage,
-        };
+    // Salvage walkthrough fields
+    const prSummary = typeof partial.prSummary === 'string' ? partial.prSummary : '';
+    let walkthrough = [];
+    if (Array.isArray(partial.walkthrough)) {
+        for (const item of partial.walkthrough) {
+            const parsed = walkthroughFileSchema.safeParse(item);
+            if (parsed.success)
+                walkthrough.push(parsed.data);
+        }
     }
-    const result = walkthroughResponseSchema.safeParse(parsed);
-    if (result.success) {
-        return { ...result.data, tokensUsed: tokenUsage };
-    }
-    // Graceful degradation — salvage whatever fields are valid
-    logger.warn({ errors: result.error.issues }, 'Walkthrough response partial parse');
-    const partial = parsed;
-    return {
-        prSummary: typeof partial.prSummary === 'string' ? partial.prSummary : '',
-        walkthrough: [],
-        detectedLanguages: Array.isArray(partial.detectedLanguages)
-            ? partial.detectedLanguages.filter((x) => typeof x === 'string')
-            : [],
-        detectedFrameworks: Array.isArray(partial.detectedFrameworks)
-            ? partial.detectedFrameworks.filter((x) => typeof x === 'string')
-            : [],
-        tokensUsed: tokenUsage,
-    };
+    return { summary, score, annotations, stats, tokensUsed: tokenUsage, prSummary, walkthrough };
 }
 
 ;// CONCATENATED MODULE: ./src/github/pulls.ts
@@ -74439,29 +74443,32 @@ async function extractPullRequestContext(octokit, owner, repo, pullNumber, confi
         pull_number: pullNumber,
         mediaType: { format: 'diff' },
     });
-    // Fetch full file contents for context (head version)
+    // Fetch full file contents for context (head version) — parallel with concurrency limit
     const fileContents = new Map();
     const maxFileSize = config.files.maxFileSize;
-    for (const file of files) {
-        if (file.status === 'removed')
-            continue;
-        try {
-            const { data } = await octokit.repos.getContent({
-                owner,
-                repo,
-                path: file.filename,
-                ref: pr.head.sha,
-            });
-            if ('content' in data && data.encoding === 'base64') {
-                const content = Buffer.from(data.content, 'base64').toString('utf-8');
-                if (content.length <= maxFileSize) {
-                    fileContents.set(file.filename, content);
+    const CONCURRENCY = 10;
+    const fetchableFiles = files.filter((f) => f.status !== 'removed');
+    for (let i = 0; i < fetchableFiles.length; i += CONCURRENCY) {
+        const batch = fetchableFiles.slice(i, i + CONCURRENCY);
+        await Promise.all(batch.map(async (file) => {
+            try {
+                const { data } = await octokit.repos.getContent({
+                    owner,
+                    repo,
+                    path: file.filename,
+                    ref: pr.head.sha,
+                });
+                if ('content' in data && data.encoding === 'base64') {
+                    const content = Buffer.from(data.content, 'base64').toString('utf-8');
+                    if (content.length <= maxFileSize) {
+                        fileContents.set(file.filename, content);
+                    }
                 }
             }
-        }
-        catch (err) {
-            logger.debug({ file: file.filename, err }, 'Could not fetch file content');
-        }
+            catch (err) {
+                logger.debug({ file: file.filename, err }, 'Could not fetch file content');
+            }
+        }));
     }
     logger.info({ filesCount: files.length, fileContentsCount: fileContents.size, diffLength: diff.length }, 'PR context extracted');
     return {
@@ -77418,82 +77425,36 @@ class ReviewOrchestrator {
                 });
                 return result;
             }
-            // Step 4: Detect languages from file extensions (pure, no API call)
-            const extensionLanguages = detectLanguages(prContext.changedFiles);
-            logger.info({ extensionLanguages }, 'Languages detected from extensions');
-            // Step 5: Pass 1 — Walkthrough (understand PR intent, detect frameworks)
-            // Can be disabled via config.walkthrough.enabled = false to save cost/latency.
-            let walkthrough;
-            if (this.config.walkthrough.enabled) {
-                logger.info({ pullNumber }, 'Running walkthrough pass (Pass 1)');
-                try {
-                    const walkthroughMessages = buildWalkthroughMessages(prContext);
-                    const walkthroughResponse = await this.llm.chatCompletion({
-                        messages: walkthroughMessages,
-                        responseFormat: { type: 'json_object' },
-                    });
-                    walkthrough = parseWalkthroughResponse(walkthroughResponse.content, walkthroughResponse.usage);
-                    // Supplement with extension-based detection for any language the model missed
-                    for (const lang of extensionLanguages) {
-                        if (!walkthrough.detectedLanguages.includes(lang)) {
-                            walkthrough.detectedLanguages.push(lang);
-                        }
-                    }
-                    logger.info({ detectedLanguages: walkthrough.detectedLanguages, detectedFrameworks: walkthrough.detectedFrameworks }, 'Walkthrough pass complete');
-                }
-                catch (err) {
-                    logger.warn({ err }, 'Walkthrough pass failed, falling back to extension-based detection');
-                    walkthrough = {
-                        prSummary: '',
-                        walkthrough: [],
-                        detectedLanguages: extensionLanguages,
-                        detectedFrameworks: [],
-                        tokensUsed: { input: 0, output: 0, cached: 0 },
-                    };
-                }
-                // Step 6: Post/update walkthrough comment (non-blocking)
-                await createWalkthroughComment(this.octokit, {
-                    owner,
-                    repo,
-                    pullNumber,
-                    headSha,
-                    walkthrough,
-                    changedFilePaths: prContext.changedFiles.map((f) => f.filename),
-                });
-            }
-            else {
-                logger.info({ pullNumber }, 'Walkthrough pass disabled, using extension-based detection');
-                walkthrough = {
-                    prSummary: '',
-                    walkthrough: [],
-                    detectedLanguages: extensionLanguages,
-                    detectedFrameworks: [],
-                    tokensUsed: { input: 0, output: 0, cached: 0 },
-                };
-            }
-            // Step 7: Pack context — determines which file contents to include within 256K budget
+            // Step 4: Detect languages and frameworks locally (no LLM call)
+            const detectedLanguages = detectLanguages(prContext.changedFiles);
+            const detectedFrameworks = detectFrameworks(prContext.fileContents);
+            logger.info({ detectedLanguages, detectedFrameworks }, 'Languages and frameworks detected locally');
+            // Step 5: Pack context — determines which file contents to include within 256K budget
             const packed = packContext(prContext, this.config);
-            logger.info({ strategy: packed.strategy, totalTokens: packed.totalTokens, includedFiles: packed.includedFiles.length }, 'Context packed for Pass 2');
+            logger.info({ strategy: packed.strategy, totalTokens: packed.totalTokens, includedFiles: packed.includedFiles.length }, 'Context packed for review');
             // Build a filtered fileContents map containing only the files selected by packContext.
-            // For large PRs (mixed/chunked strategy) this prevents blowing the token budget.
             const packedFileContents = new Map();
             for (const path of packed.includedFiles) {
                 const content = prContext.fileContents.get(path);
                 if (content)
                     packedFileContents.set(path, content);
             }
-            // Step 8: Pass 2 — Deep review using walkthrough context + budget-respecting file contents
-            logger.info({ pullNumber }, 'Running deep review pass (Pass 2)');
-            const messages = buildDeepReviewMessages(prContext, this.config, walkthrough, packedFileContents);
+            // Step 6: Single-pass review — walkthrough + deep review in one LLM call
+            logger.info({ pullNumber }, 'Running single-pass review');
+            // In chunked mode, use the budget-truncated diff instead of the full one
+            const reviewContext = packed.truncatedDiff
+                ? { ...prContext, diff: packed.truncatedDiff }
+                : prContext;
+            const messages = buildDeepReviewMessages(reviewContext, this.config, detectedLanguages, detectedFrameworks, packedFileContents);
             const reviewResponse = await this.llm.chatCompletion({
                 messages,
                 responseFormat: { type: 'json_object' },
             });
-            // Step 9: Parse review response — retry once if JSON extraction failed entirely
+            // Step 7: Parse review response — retry once if JSON extraction failed entirely
             let result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
             let reviewUsage = reviewResponse.usage;
             if (result.parseError) {
-                logger.warn({ pullNumber }, 'AI response JSON extraction failed, retrying deep review pass');
+                logger.warn({ pullNumber }, 'AI response JSON extraction failed, retrying');
                 const retryResponse = await this.llm.chatCompletion({
                     messages,
                     responseFormat: { type: 'json_object' },
@@ -77501,35 +77462,57 @@ class ReviewOrchestrator {
                 reviewUsage = sumTokenUsage(reviewResponse.usage, retryResponse.usage);
                 result = parseAIResponse(retryResponse.content, reviewUsage);
             }
-            // Merge token usage from both passes into the result
-            result.tokensUsed = sumTokenUsage(walkthrough.tokensUsed, reviewUsage);
-            // Step 10: Filter by minimum severity
+            result.tokensUsed = reviewUsage;
+            // Step 8: Post walkthrough comment from the review result (non-blocking)
+            if (this.config.walkthrough.enabled && (result.prSummary || result.walkthrough?.length)) {
+                try {
+                    const walkthrough = {
+                        prSummary: result.prSummary ?? '',
+                        walkthrough: result.walkthrough ?? [],
+                        detectedLanguages,
+                        detectedFrameworks,
+                        tokensUsed: { input: 0, output: 0, cached: 0 },
+                    };
+                    await createWalkthroughComment(this.octokit, {
+                        owner,
+                        repo,
+                        pullNumber,
+                        headSha,
+                        walkthrough,
+                        changedFilePaths: prContext.changedFiles.map((f) => f.filename),
+                    });
+                }
+                catch (err) {
+                    logger.warn({ err }, 'Failed to post walkthrough comment, continuing');
+                }
+            }
+            // Step 9: Filter by minimum severity
             const minSeverityOrder = ['critical', 'warning', 'suggestion', 'nitpick'];
             const minIdx = minSeverityOrder.indexOf(this.config.review.minSeverity);
             result.annotations = result.annotations.filter((a) => minSeverityOrder.indexOf(a.severity) <= minIdx);
-            // Step 11: Apply config-based suppressions
+            // Step 10: Apply config-based suppressions
             result.annotations = applySuppressions(result.annotations, this.config.suppressions);
-            // Step 12: Smart sort + truncate to maxAnnotations
+            // Step 11: Smart sort + truncate to maxAnnotations
             result.annotations = sortAndTruncateAnnotations(result.annotations, this.config.review.maxAnnotations);
             // Recompute stats after all filtering
             const stats = { critical: 0, warning: 0, suggestion: 0, nitpick: 0 };
             for (const a of result.annotations)
                 stats[a.severity]++;
             result.stats = stats;
-            // Step 13: Determine conclusion
+            // Step 12: Determine conclusion
             const conclusion = this.config.review.failOn === 'critical' && result.stats.critical > 0
                 ? 'failure'
                 : this.config.review.failOn === 'warning' &&
                     (result.stats.critical > 0 || result.stats.warning > 0)
                     ? 'failure'
                     : 'success';
-            // Step 14: Update Check Run
+            // Step 13: Update Check Run
             const summaryMd = buildSummary(result);
             await completeCheckRun(this.octokit, {
                 owner, repo, checkRunId, conclusion,
                 summary: summaryMd, annotations: result.annotations,
             });
-            // Step 15: Create PR Review (inline comments)
+            // Step 14: Create PR Review (inline comments)
             await createPRReview(this.octokit, {
                 owner,
                 repo,
@@ -77547,7 +77530,7 @@ class ReviewOrchestrator {
                 annotations: result.annotations.length,
                 conclusion,
                 contextStrategy: packed.strategy,
-                detectedLanguages: walkthrough.detectedLanguages,
+                detectedLanguages,
             }, 'Review completed');
             return result;
         }
@@ -77580,6 +77563,7 @@ class OpenAICompatibleProvider {
     temperature;
     timeout;
     isOpenRouter;
+    maxRetries;
     constructor(config) {
         this.apiKey = config.apiKey;
         this.model = config.model;
@@ -77590,14 +77574,15 @@ class OpenAICompatibleProvider {
         this.temperature = config.temperature ?? 0.2;
         this.timeout = config.timeout ?? 600_000;
         this.isOpenRouter = this.baseUrl.toLowerCase().includes("openrouter.ai");
+        this.maxRetries = 2;
     }
     async chatCompletion(params) {
-        const response = await this.withTimeout((signal) => this.performCompletionRequest(params.messages, params.responseFormat, signal));
+        const response = await this.withRetry((signal) => this.performCompletionRequest(params.messages, params.responseFormat, signal));
         if (this.isOpenRouter &&
             params.responseFormat?.type === "json_object" &&
             !response.content.trim()) {
             logger.warn({ model: this.model, baseUrl: this.baseUrl }, "OpenRouter returned empty structured output, retrying without response_format");
-            const retryResponse = await this.withTimeout((signal) => this.performCompletionRequest(params.messages, undefined, signal));
+            const retryResponse = await this.withRetry((signal) => this.performCompletionRequest(params.messages, undefined, signal));
             return retryResponse.content.trim() ? retryResponse : response;
         }
         return response;
@@ -77611,6 +77596,37 @@ class OpenAICompatibleProvider {
         finally {
             clearTimeout(timer);
         }
+    }
+    isRetryableError(err) {
+        if (err instanceof LLMApiError) {
+            const status = err.statusCode;
+            return status === 429 || (status >= 500 && status <= 504);
+        }
+        // Retry on network errors (but not AbortError — that's our own timeout)
+        if (err instanceof Error) {
+            return err.name === 'TypeError' || err.message.includes('fetch failed');
+        }
+        return false;
+    }
+    async withRetry(fn) {
+        let lastError;
+        for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+            try {
+                return await this.withTimeout(fn);
+            }
+            catch (err) {
+                lastError = err;
+                if (attempt < this.maxRetries && this.isRetryableError(err)) {
+                    const delay = 2_000 * Math.pow(2, attempt); // 2s, 4s
+                    logger.warn({ attempt: attempt + 1, maxRetries: this.maxRetries, delay, err: err instanceof Error ? err.message : String(err) }, 'LLM API call failed, retrying');
+                    await new Promise((resolve) => setTimeout(resolve, delay));
+                }
+                else {
+                    throw err;
+                }
+            }
+        }
+        throw lastError;
     }
     extractTextContent(message) {
         const content = message?.content;
@@ -77631,6 +77647,7 @@ class OpenAICompatibleProvider {
             model: this.model,
             messages,
             temperature: this.temperature,
+            max_tokens: 8_192,
             ...(responseFormat && { response_format: responseFormat }),
             ...(isOpenRouter && responseFormat
                 ? { plugins: [{ id: "response-healing" }] }
@@ -77648,8 +77665,8 @@ class OpenAICompatibleProvider {
                 // 'User-Agent': 'fiscalcr/1.0',
                 // 'X-Client-Name': 'fiscalcr',
                 // NOTE: this is needed for own usage to bypass kimi 403
-                "User-Agent": "gsd/2.77.0",
-                "X-Client-Name": "opencode",
+                "User-Agent": "claude-code/1.0",
+                "X-Client-Name": "claude-code",
             },
             body: JSON.stringify(body),
             signal,
