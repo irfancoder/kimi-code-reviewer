@@ -166,7 +166,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       model: this.model,
       messages,
       temperature: this.temperature,
-      max_tokens: 8_192,
+      max_tokens: 16_384,
       ...(responseFormat && { response_format: responseFormat }),
       ...(isOpenRouter && responseFormat
         ? { plugins: [{ id: "response-healing" }] }
