@@ -66,7 +66,7 @@ export class AIClient {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
-          "User-Agent": "claude-code/1.0",
+          "User-Agent": "gsd/2.77.0",
           "X-Client-Name": "claude-code",
         },
         body: JSON.stringify(body),

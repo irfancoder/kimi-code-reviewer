@@ -60,7 +60,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
     responseFormat?: { type: "json_object" | "text" };
   }): Promise<LLMCompletionResponse> {
     const response = await this.withTimeout((signal) =>
-      this.performCompletionRequest(params.messages, params.responseFormat, signal),
+      this.performCompletionRequest(
+        params.messages,
+        params.responseFormat,
+        signal,
+      ),
     );
 
     if (
@@ -83,7 +87,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     return response;
   }
 
-  private async withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  private async withTimeout<T>(
+    fn: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
     try {
@@ -141,8 +147,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         // 'User-Agent': 'fiscalcr/1.0',
         // 'X-Client-Name': 'fiscalcr',
         // NOTE: this is needed for own usage to bypass kimi 403
-        "User-Agent": "claude-code/1.0",
-        "X-Client-Name": "claude-code",
+        "User-Agent": "gsd/2.77.0",
       },
       body: JSON.stringify(body),
       signal,
