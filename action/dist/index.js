@@ -69323,7 +69323,7 @@ const logger = pino_default()({
 
 const MAX_CONTEXT_TOKENS = 256_000;
 const SYSTEM_PROMPT_RESERVE = 4_000;
-const OUTPUT_RESERVE = 16_384;
+const OUTPUT_RESERVE = 32_768;
 const BUDGET = MAX_CONTEXT_TOKENS - SYSTEM_PROMPT_RESERVE - OUTPUT_RESERVE; // ~235K
 const FULL_MODE_THRESHOLD = 50_000;
 const MIXED_MODE_THRESHOLD = 150_000;
@@ -77453,7 +77453,10 @@ class ReviewOrchestrator {
             // Step 7: Parse review response — retry once if JSON extraction failed entirely
             let result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
             let reviewUsage = reviewResponse.usage;
-            if (result.parseError) {
+            if (result.parseError && reviewResponse.finishReason === 'length') {
+                logger.warn({ pullNumber, completionTokens: reviewUsage.output }, 'Response truncated — output hit max_tokens limit, skipping retry');
+            }
+            else if (result.parseError) {
                 logger.warn({ pullNumber }, 'AI response JSON extraction failed, retrying');
                 const retryResponse = await this.llm.chatCompletion({
                     messages,
@@ -77647,7 +77650,7 @@ class OpenAICompatibleProvider {
             model: this.model,
             messages,
             temperature: this.temperature,
-            max_tokens: 8_192,
+            max_tokens: 32_768,
             ...(responseFormat && { response_format: responseFormat }),
             ...(isOpenRouter && responseFormat
                 ? { plugins: [{ id: "response-healing" }] }
@@ -77692,7 +77695,7 @@ class OpenAICompatibleProvider {
             cachedTokens: usage.cached,
             finishReason: firstChoice?.finish_reason ?? null,
         }, "LLM API call completed");
-        return { content, usage };
+        return { content, usage, finishReason: firstChoice?.finish_reason ?? null };
     }
 }
 

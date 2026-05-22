@@ -166,7 +166,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       model: this.model,
       messages,
       temperature: this.temperature,
-      max_tokens: 16_384,
+      max_tokens: 32_768,
       ...(responseFormat && { response_format: responseFormat }),
       ...(isOpenRouter && responseFormat
         ? { plugins: [{ id: "response-healing" }] }
@@ -225,6 +225,6 @@ export class OpenAICompatibleProvider implements LLMProvider {
       "LLM API call completed",
     );
 
-    return { content, usage };
+    return { content, usage, finishReason: firstChoice?.finish_reason ?? null };
   }
 }

@@ -9,6 +9,7 @@ export interface LLMTokenUsage {
 export interface LLMCompletionResponse {
   content: string;
   usage: LLMTokenUsage;
+  finishReason?: string | null;
 }
 
 export interface LLMProvider {

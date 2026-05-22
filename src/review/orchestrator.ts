@@ -102,7 +102,12 @@ export class ReviewOrchestrator {
       // Step 7: Parse review response — retry once if JSON extraction failed entirely
       let result = parseAIResponse(reviewResponse.content, reviewResponse.usage);
       let reviewUsage = reviewResponse.usage;
-      if (result.parseError) {
+      if (result.parseError && reviewResponse.finishReason === 'length') {
+        logger.warn(
+          { pullNumber, completionTokens: reviewUsage.output },
+          'Response truncated — output hit max_tokens limit, skipping retry',
+        );
+      } else if (result.parseError) {
         logger.warn({ pullNumber }, 'AI response JSON extraction failed, retrying');
         const retryResponse = await this.llm.chatCompletion({
           messages,
