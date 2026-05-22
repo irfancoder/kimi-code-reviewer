@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "clean": "rm -rf dist action/dist"
+    "clean": "rm -rf dist action/dist",
+    "test:llm": "NODE_ENV=production tsx --env-file=.env scripts/test-llm.ts"
   },
   "keywords": [
     "kimi",
